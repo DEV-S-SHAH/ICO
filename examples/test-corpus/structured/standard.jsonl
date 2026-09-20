@@ -1,0 +1,4 @@
+{"record_id": "REC-001", "region": "North", "quarter": "Q1", "revenue": 1200000, "active": true}
+{"record_id": "REC-002", "region": "South", "quarter": "Q1", "revenue": 950000, "active": true}
+{"record_id": "REC-003", "region": "East", "quarter": "Q2", "revenue": 1400000, "active": false}
+{"record_id": "REC-004", "region": "West", "quarter": "Q2", "revenue": 1650000, "active": true}

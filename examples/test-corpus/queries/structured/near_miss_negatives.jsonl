@@ -1,0 +1,87 @@
+{"query_1": "What was the revenue for region North in Q1?", "query_2": "What was the revenue for region South in Q1?", "label": false}
+{"query_1": "What was North region's operating margin in Q1?", "query_2": "What was South region's operating margin in Q1?", "label": false}
+{"query_1": "What was the revenue for region North in Q2?", "query_2": "What was the revenue for region South in Q2?", "label": false}
+{"query_1": "What was North region's operating margin in Q2?", "query_2": "What was South region's operating margin in Q2?", "label": false}
+{"query_1": "What was the revenue for region North in Q3?", "query_2": "What was the revenue for region South in Q3?", "label": false}
+{"query_1": "What was North region's operating margin in Q3?", "query_2": "What was South region's operating margin in Q3?", "label": false}
+{"query_1": "What was the revenue for region North in Q4?", "query_2": "What was the revenue for region South in Q4?", "label": false}
+{"query_1": "What was North region's operating margin in Q4?", "query_2": "What was South region's operating margin in Q4?", "label": false}
+{"query_1": "What was the revenue for region South in Q1?", "query_2": "What was the revenue for region East in Q1?", "label": false}
+{"query_1": "What was South region's operating margin in Q1?", "query_2": "What was East region's operating margin in Q1?", "label": false}
+{"query_1": "What was the revenue for region South in Q2?", "query_2": "What was the revenue for region East in Q2?", "label": false}
+{"query_1": "What was South region's operating margin in Q2?", "query_2": "What was East region's operating margin in Q2?", "label": false}
+{"query_1": "What was the revenue for region South in Q3?", "query_2": "What was the revenue for region East in Q3?", "label": false}
+{"query_1": "What was South region's operating margin in Q3?", "query_2": "What was East region's operating margin in Q3?", "label": false}
+{"query_1": "What was the revenue for region South in Q4?", "query_2": "What was the revenue for region East in Q4?", "label": false}
+{"query_1": "What was South region's operating margin in Q4?", "query_2": "What was East region's operating margin in Q4?", "label": false}
+{"query_1": "What was the revenue for region East in Q1?", "query_2": "What was the revenue for region West in Q1?", "label": false}
+{"query_1": "What was East region's operating margin in Q1?", "query_2": "What was West region's operating margin in Q1?", "label": false}
+{"query_1": "What was the revenue for region East in Q2?", "query_2": "What was the revenue for region West in Q2?", "label": false}
+{"query_1": "What was East region's operating margin in Q2?", "query_2": "What was West region's operating margin in Q2?", "label": false}
+{"query_1": "What was the revenue for region East in Q3?", "query_2": "What was the revenue for region West in Q3?", "label": false}
+{"query_1": "What was East region's operating margin in Q3?", "query_2": "What was West region's operating margin in Q3?", "label": false}
+{"query_1": "What was the revenue for region East in Q4?", "query_2": "What was the revenue for region West in Q4?", "label": false}
+{"query_1": "What was East region's operating margin in Q4?", "query_2": "What was West region's operating margin in Q4?", "label": false}
+{"query_1": "What was the revenue for region West in Q1?", "query_2": "What was the revenue for region North in Q1?", "label": false}
+{"query_1": "What was West region's operating margin in Q1?", "query_2": "What was North region's operating margin in Q1?", "label": false}
+{"query_1": "What was the revenue for region West in Q2?", "query_2": "What was the revenue for region North in Q2?", "label": false}
+{"query_1": "What was West region's operating margin in Q2?", "query_2": "What was North region's operating margin in Q2?", "label": false}
+{"query_1": "What was the revenue for region West in Q3?", "query_2": "What was the revenue for region North in Q3?", "label": false}
+{"query_1": "What was West region's operating margin in Q3?", "query_2": "What was North region's operating margin in Q3?", "label": false}
+{"query_1": "What was the revenue for region West in Q4?", "query_2": "What was the revenue for region North in Q4?", "label": false}
+{"query_1": "What was West region's operating margin in Q4?", "query_2": "What was North region's operating margin in Q4?", "label": false}
+{"query_1": "What was the revenue for region North in Q1?", "query_2": "What was the revenue for region North in Q2?", "label": false}
+{"query_1": "What was the revenue for region North in Q2?", "query_2": "What was the revenue for region North in Q3?", "label": false}
+{"query_1": "What was the revenue for region North in Q3?", "query_2": "What was the revenue for region North in Q4?", "label": false}
+{"query_1": "What was the revenue for region North in Q4?", "query_2": "What was the revenue for region North in Q1?", "label": false}
+{"query_1": "What was the revenue for region South in Q1?", "query_2": "What was the revenue for region South in Q2?", "label": false}
+{"query_1": "What was the revenue for region South in Q2?", "query_2": "What was the revenue for region South in Q3?", "label": false}
+{"query_1": "What was the revenue for region South in Q3?", "query_2": "What was the revenue for region South in Q4?", "label": false}
+{"query_1": "What was the revenue for region South in Q4?", "query_2": "What was the revenue for region South in Q1?", "label": false}
+{"query_1": "What was the revenue for region East in Q1?", "query_2": "What was the revenue for region East in Q2?", "label": false}
+{"query_1": "What was the revenue for region East in Q2?", "query_2": "What was the revenue for region East in Q3?", "label": false}
+{"query_1": "What was the revenue for region East in Q3?", "query_2": "What was the revenue for region East in Q4?", "label": false}
+{"query_1": "What was the revenue for region East in Q4?", "query_2": "What was the revenue for region East in Q1?", "label": false}
+{"query_1": "What was the revenue for region West in Q1?", "query_2": "What was the revenue for region West in Q2?", "label": false}
+{"query_1": "What was the revenue for region West in Q2?", "query_2": "What was the revenue for region West in Q3?", "label": false}
+{"query_1": "What was the revenue for region West in Q3?", "query_2": "What was the revenue for region West in Q4?", "label": false}
+{"query_1": "What was the revenue for region West in Q4?", "query_2": "What was the revenue for region West in Q1?", "label": false}
+{"query_1": "Show status of transaction TXN-101.", "query_2": "Show status of transaction TXN-102.", "label": false}
+{"query_1": "Show status of transaction TXN-102.", "query_2": "Show status of transaction TXN-103.", "label": false}
+{"query_1": "Show status of transaction TXN-103.", "query_2": "Show status of transaction TXN-104.", "label": false}
+{"query_1": "Show status of transaction TXN-104.", "query_2": "Show status of transaction TXN-105.", "label": false}
+{"query_1": "Show status of transaction TXN-105.", "query_2": "Show status of transaction TXN-106.", "label": false}
+{"query_1": "Show status of transaction TXN-106.", "query_2": "Show status of transaction TXN-107.", "label": false}
+{"query_1": "Show status of transaction TXN-107.", "query_2": "Show status of transaction TXN-108.", "label": false}
+{"query_1": "Show status of transaction TXN-108.", "query_2": "Show status of transaction TXN-109.", "label": false}
+{"query_1": "Show status of transaction TXN-109.", "query_2": "Show status of transaction TXN-1010.", "label": false}
+{"query_1": "Show status of transaction TXN-1010.", "query_2": "Show status of transaction TXN-1011.", "label": false}
+{"query_1": "Show status of transaction TXN-1011.", "query_2": "Show status of transaction TXN-1012.", "label": false}
+{"query_1": "Show status of transaction TXN-1012.", "query_2": "Show status of transaction TXN-1013.", "label": false}
+{"query_1": "Show status of transaction TXN-1013.", "query_2": "Show status of transaction TXN-1014.", "label": false}
+{"query_1": "Show status of transaction TXN-1014.", "query_2": "Show status of transaction TXN-1015.", "label": false}
+{"query_1": "Show status of transaction TXN-1015.", "query_2": "Show status of transaction TXN-1016.", "label": false}
+{"query_1": "Show status of transaction TXN-1016.", "query_2": "Show status of transaction TXN-1017.", "label": false}
+{"query_1": "Show status of transaction TXN-1017.", "query_2": "Show status of transaction TXN-1018.", "label": false}
+{"query_1": "Show status of transaction TXN-1018.", "query_2": "Show status of transaction TXN-1019.", "label": false}
+{"query_1": "Show status of transaction TXN-1019.", "query_2": "Show status of transaction TXN-1020.", "label": false}
+{"query_1": "Show status of transaction TXN-1020.", "query_2": "Show status of transaction TXN-1021.", "label": false}
+{"query_1": "Show status of transaction TXN-1021.", "query_2": "Show status of transaction TXN-1022.", "label": false}
+{"query_1": "Show status of transaction TXN-1022.", "query_2": "Show status of transaction TXN-1023.", "label": false}
+{"query_1": "Show status of transaction TXN-1023.", "query_2": "Show status of transaction TXN-1024.", "label": false}
+{"query_1": "Show status of transaction TXN-1024.", "query_2": "Show status of transaction TXN-1025.", "label": false}
+{"query_1": "Show status of transaction TXN-1025.", "query_2": "Show status of transaction TXN-1026.", "label": false}
+{"query_1": "Show status of transaction TXN-1026.", "query_2": "Show status of transaction TXN-1027.", "label": false}
+{"query_1": "Show status of transaction TXN-1027.", "query_2": "Show status of transaction TXN-1028.", "label": false}
+{"query_1": "Show status of transaction TXN-1028.", "query_2": "Show status of transaction TXN-1029.", "label": false}
+{"query_1": "Show status of transaction TXN-1029.", "query_2": "Show status of transaction TXN-1030.", "label": false}
+{"query_1": "Show status of transaction TXN-1030.", "query_2": "Show status of transaction TXN-1031.", "label": false}
+{"query_1": "Show status of transaction TXN-1031.", "query_2": "Show status of transaction TXN-1032.", "label": false}
+{"query_1": "Show status of transaction TXN-1032.", "query_2": "Show status of transaction TXN-1033.", "label": false}
+{"query_1": "Show status of transaction TXN-1033.", "query_2": "Show status of transaction TXN-1034.", "label": false}
+{"query_1": "Show status of transaction TXN-1034.", "query_2": "Show status of transaction TXN-1035.", "label": false}
+{"query_1": "Show status of transaction TXN-1035.", "query_2": "Show status of transaction TXN-1036.", "label": false}
+{"query_1": "Show status of transaction TXN-1036.", "query_2": "Show status of transaction TXN-1037.", "label": false}
+{"query_1": "Show status of transaction TXN-1037.", "query_2": "Show status of transaction TXN-1038.", "label": false}
+{"query_1": "Show status of transaction TXN-1038.", "query_2": "Show status of transaction TXN-1039.", "label": false}
+{"query_1": "Show status of transaction TXN-1039.", "query_2": "Show status of transaction TXN-1040.", "label": false}

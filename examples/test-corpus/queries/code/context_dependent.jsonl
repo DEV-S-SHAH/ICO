@@ -1,0 +1,12 @@
+{"query": "Explain the subtotal implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: WorkerHandler", "label": false}
+{"query": "Explain the tax implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: WorkerHandler", "label": false}
+{"query": "Explain the checkout implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: WorkerHandler", "label": false}
+{"query": "Show execution workflow.", "context_1": "Context is OrderProcessor Stage 1", "context_2": "Context is WorkerHandler Stage 2", "label": false}
+{"query": "Explain the subtotal implementation details.", "context_1": "Class context: InventoryManager", "context_2": "Class context: PaymentGateway", "label": false}
+{"query": "Explain the tax implementation details.", "context_1": "Class context: InventoryManager", "context_2": "Class context: PaymentGateway", "label": false}
+{"query": "Explain the checkout implementation details.", "context_1": "Class context: InventoryManager", "context_2": "Class context: PaymentGateway", "label": false}
+{"query": "Show execution workflow.", "context_1": "Context is InventoryManager Stage 1", "context_2": "Context is PaymentGateway Stage 2", "label": false}
+{"query": "Explain the subtotal implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: InventoryManager", "label": false}
+{"query": "Explain the tax implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: InventoryManager", "label": false}
+{"query": "Explain the checkout implementation details.", "context_1": "Class context: OrderProcessor", "context_2": "Class context: InventoryManager", "label": false}
+{"query": "Show execution workflow.", "context_1": "Context is OrderProcessor Stage 1", "context_2": "Context is InventoryManager Stage 2", "label": false}
