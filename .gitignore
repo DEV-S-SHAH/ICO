@@ -11,12 +11,12 @@ lancedb/
 .DS_Store
 
 # Temporary scratch scripts and logs
-build_compose.py
-calibrate_filtered.py
-calibrate_gate.py
-check_*.py
-chunks.txt
-clear_*.py
+/build_compose.py
+/calibrate_filtered.py
+/calibrate_gate.py
+/check_*.py
+/chunks.txt
+/clear_*.py
 count.py
 debug_eval.py
 declines_output*.txt
