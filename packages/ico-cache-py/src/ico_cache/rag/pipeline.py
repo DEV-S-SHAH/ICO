@@ -2,6 +2,7 @@ import time
 from typing import Any, List, Optional
 import litellm
 from ..backends.base import BaseEmbedder, BaseVectorStore
+from ..telemetry.tracing import trace_rag_fallback
 
 
 def validate_model_spec(model: str) -> None:
@@ -76,61 +77,65 @@ class RAGPipeline:
             return []
 
     async def generate(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", llm_generate_fn=None):
-        t0 = time.time()
-        retrieved_payloads = await self.retrieve(query, meta, tenant_id=tenant_id, top_k=30)
-        t_ret = time.time() - t0
+        with trace_rag_fallback(tenant_id=tenant_id, query=query) as fb:
+            t0 = time.time()
+            retrieved_payloads = await self.retrieve(query, meta, tenant_id=tenant_id, top_k=30)
+            t_ret = time.time() - t0
 
-        if not retrieved_payloads:
-            return "Insufficient context.", t_ret, 0.0, -99.9, []
+            if not retrieved_payloads:
+                fb.record_completion(citations_count=0, score=-99.9)
+                return "Insufficient context.", t_ret, 0.0, -99.9, []
 
-        best_score = 0.0
-        top_chunks = []
+            best_score = 0.0
+            top_chunks = []
 
-        if self.reranker:
-            pairs = [[query, p.get("text", "")] for p in retrieved_payloads]
-            scores = self.reranker.predict(pairs)
-            ranked = sorted(zip(scores, retrieved_payloads), key=lambda x: x[0], reverse=True)
-            best_score = ranked[0][0]
-            top_chunks = ranked[:3]
-        else:
-            best_score = 1.0
-            top_chunks = [(1.0, p) for p in retrieved_payloads[:3]]
+            if self.reranker:
+                pairs = [[query, p.get("text", "")] for p in retrieved_payloads]
+                scores = self.reranker.predict(pairs)
+                ranked = sorted(zip(scores, retrieved_payloads), key=lambda x: x[0], reverse=True)
+                best_score = ranked[0][0]
+                top_chunks = ranked[:3]
+            else:
+                best_score = 1.0
+                top_chunks = [(1.0, p) for p in retrieved_payloads[:3]]
 
-        is_filtered = self._has_active_filters(meta or {})
-        threshold = self.filtered_threshold if is_filtered else self.unfiltered_threshold
+            is_filtered = self._has_active_filters(meta or {})
+            threshold = self.filtered_threshold if is_filtered else self.unfiltered_threshold
 
-        if best_score < threshold:
-            return "Insufficient context.", t_ret, 0.0, best_score, []
+            if best_score < threshold:
+                fb.record_completion(citations_count=0, score=best_score)
+                return "Insufficient context.", t_ret, 0.0, best_score, []
 
-        context = "\n\n".join([f"[{p.get('page_or_section','')}] {p.get('text','')}" for s, p in top_chunks])
-        citations = [p.get('source_file', '') for s, p in top_chunks]
+            context = "\n\n".join([f"[{p.get('page_or_section','')}] {p.get('text','')}" for s, p in top_chunks])
+            citations = [p.get('source_file', '') for s, p in top_chunks]
 
-        prompt = f"""Answer using the provided context below.
+            prompt = f"""Answer using the provided context below.
 Context:
 {context}
 
 Question: {query}
 Answer:"""
 
-        t1 = time.time()
-        ans = "Error generating response."
-        if llm_generate_fn:
-            ans = llm_generate_fn(prompt)
-        else:
-            try:
-                call_kwargs = {}
-                if self.api_base:
-                    call_kwargs["api_base"] = self.api_base
-                if self.api_key:
-                    call_kwargs["api_key"] = self.api_key
-                resp = litellm.completion(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    **call_kwargs
-                )
-                ans = resp.choices[0].message.content.strip()
-            except Exception as e:
-                ans = f"LLM generation failed: {e}"
-        t_gen = time.time() - t1
+            t1 = time.time()
+            ans = "Error generating response."
+            if llm_generate_fn:
+                ans = llm_generate_fn(prompt)
+            else:
+                try:
+                    call_kwargs = {}
+                    if self.api_base:
+                        call_kwargs["api_base"] = self.api_base
+                    if self.api_key:
+                        call_kwargs["api_key"] = self.api_key
+                    resp = litellm.completion(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        **call_kwargs
+                    )
+                    ans = resp.choices[0].message.content.strip()
+                except Exception as e:
+                    ans = f"LLM generation failed: {e}"
+            t_gen = time.time() - t1
 
-        return ans, t_ret, t_gen, best_score, citations
+            fb.record_completion(citations_count=len(citations), score=best_score)
+            return ans, t_ret, t_gen, best_score, citations

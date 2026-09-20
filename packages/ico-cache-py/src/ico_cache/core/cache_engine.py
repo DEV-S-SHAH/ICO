@@ -10,6 +10,7 @@ from typing import List, Optional
 import structlog
 
 from ..backends.base import BaseEmbedder, BaseExactStore, BaseVectorStore
+from ..telemetry.tracing import trace_cache_lookup
 from .metadata_guard import MetadataSchema, hard_gate
 
 logger = structlog.get_logger("ico_cache.core.cache_engine")
@@ -382,50 +383,59 @@ class CacheEngine:
     ):
         t0 = time.perf_counter()
 
-        t_l1_start = time.perf_counter()
-        res = await self.get_l1(query, meta, tenant_id=tenant_id)
-        t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
-        if res:
-            self._update_adaptive_threshold(True)
-            self._layer_stats["L1"] += 1
-            logger.info(
-                "cache_hit",
-                layer="L1",
-                tenant_id=tenant_id,
-                query=query,
-                latency_ms=round(t_l1_ms, 3),
-            )
-            return {"source": "L1", "response": res}
+        # L1 Lookup
+        with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
+            t_l1_start = time.perf_counter()
+            res = await self.get_l1(query, meta, tenant_id=tenant_id)
+            t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
+            rec_l1.record_result(hit=res is not None)
+            if res:
+                self._update_adaptive_threshold(True)
+                self._layer_stats["L1"] += 1
+                logger.info(
+                    "cache_hit",
+                    layer="L1",
+                    tenant_id=tenant_id,
+                    query=query,
+                    latency_ms=round(t_l1_ms, 3),
+                )
+                return {"source": "L1", "response": res}
 
-        t_l2_start = time.perf_counter()
-        res2 = await self.get_l2(query, meta, tenant_id=tenant_id)
-        t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
-        if res2:
-            self._update_adaptive_threshold(True)
-            self._layer_stats["L2"] += 1
-            logger.info(
-                "cache_hit",
-                layer="L2",
-                tenant_id=tenant_id,
-                query=query,
-                latency_ms=round(t_l2_ms, 3),
-            )
-            return {"source": "L2", "response": res2}
+        # L2 Lookup
+        with trace_cache_lookup("L2", tenant_id=tenant_id, query=query) as rec_l2:
+            t_l2_start = time.perf_counter()
+            res2 = await self.get_l2(query, meta, tenant_id=tenant_id)
+            t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
+            rec_l2.record_result(hit=res2 is not None)
+            if res2:
+                self._update_adaptive_threshold(True)
+                self._layer_stats["L2"] += 1
+                logger.info(
+                    "cache_hit",
+                    layer="L2",
+                    tenant_id=tenant_id,
+                    query=query,
+                    latency_ms=round(t_l2_ms, 3),
+                )
+                return {"source": "L2", "response": res2}
 
-        t_l3_start = time.perf_counter()
-        res3 = await self.get_l3(query, context, meta, tenant_id=tenant_id)
-        t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
-        if res3:
-            self._update_adaptive_threshold(True)
-            self._layer_stats["L3"] += 1
-            logger.info(
-                "cache_hit",
-                layer="L3",
-                tenant_id=tenant_id,
-                query=query,
-                latency_ms=round(t_l3_ms, 3),
-            )
-            return {"source": "L3", "response": res3}
+        # L3 Lookup
+        with trace_cache_lookup("L3", tenant_id=tenant_id, query=query) as rec_l3:
+            t_l3_start = time.perf_counter()
+            res3 = await self.get_l3(query, context, meta, tenant_id=tenant_id)
+            t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
+            rec_l3.record_result(hit=res3 is not None)
+            if res3:
+                self._update_adaptive_threshold(True)
+                self._layer_stats["L3"] += 1
+                logger.info(
+                    "cache_hit",
+                    layer="L3",
+                    tenant_id=tenant_id,
+                    query=query,
+                    latency_ms=round(t_l3_ms, 3),
+                )
+                return {"source": "L3", "response": res3}
 
         total_ms = (time.perf_counter() - t0) * 1000
         self._update_adaptive_threshold(False)
