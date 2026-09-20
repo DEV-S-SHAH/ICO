@@ -1,0 +1,136 @@
+import time
+from typing import Any, List, Optional
+import litellm
+from ..backends.base import BaseEmbedder, BaseVectorStore
+
+
+def validate_model_spec(model: str) -> None:
+    """Validates that model string is non-empty and well-formed for litellm."""
+    if not model or not isinstance(model, str) or not model.strip():
+        raise ValueError("LLM model string must be a non-empty string.")
+
+
+class RAGPipeline:
+    def __init__(
+        self,
+        dense_embedder: BaseEmbedder,
+        vector_store: BaseVectorStore,
+        metadata_filter_keys: Optional[List[str]] = None,
+        filtered_threshold: float = -8.50,
+        unfiltered_threshold: float = 0.10,
+        collection_name: str = "rag_corpus",
+        reranker: Any = None,
+        model: str = "ollama/qwen2.5:3b",
+        api_base: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ):
+        validate_model_spec(model)
+        self.dense_embedder = dense_embedder
+        self.vector_store = vector_store
+        self.metadata_filter_keys = metadata_filter_keys or []
+
+        self.filtered_threshold = filtered_threshold
+        self.unfiltered_threshold = unfiltered_threshold
+        self.collection_name = collection_name
+        self.reranker = reranker
+        self.model = model
+        self.api_base = api_base
+        self.api_key = api_key
+
+    def _has_active_filters(self, meta: dict) -> bool:
+        return any(k in meta for k in self.metadata_filter_keys)
+
+    async def retrieve(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", top_k: int = 30, **kwargs) -> List[dict]:
+        meta = meta or {}
+        dense_vec = self.dense_embedder.embed(query)
+
+        # Build filter
+        from qdrant_client.http import models
+        q_filter = None
+        conditions = []
+        for k in self.metadata_filter_keys:
+            if k in meta:
+                conditions.append(
+                    models.FieldCondition(
+                        key=f"meta.{k}",
+                        match=models.MatchValue(value=meta[k])
+                    )
+                )
+        if conditions:
+            q_filter = models.Filter(must=conditions)
+
+        target_coll = f"{tenant_id}_{self.collection_name}" if tenant_id != "default" else self.collection_name
+
+        try:
+            d_res = await self.vector_store.search(
+                collection=target_coll,
+                vector=dense_vec,
+                query_filter=q_filter,
+                limit=top_k,
+                score_threshold=0.0,
+                using=kwargs.get("using") if kwargs else None
+            )
+            return [p.payload for p in d_res]
+        except Exception as e:
+            print("Retrieve error:", e)
+            return []
+
+    async def generate(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", llm_generate_fn=None):
+        t0 = time.time()
+        retrieved_payloads = await self.retrieve(query, meta, tenant_id=tenant_id, top_k=30)
+        t_ret = time.time() - t0
+
+        if not retrieved_payloads:
+            return "Insufficient context.", t_ret, 0.0, -99.9, []
+
+        best_score = 0.0
+        top_chunks = []
+
+        if self.reranker:
+            pairs = [[query, p.get("text", "")] for p in retrieved_payloads]
+            scores = self.reranker.predict(pairs)
+            ranked = sorted(zip(scores, retrieved_payloads), key=lambda x: x[0], reverse=True)
+            best_score = ranked[0][0]
+            top_chunks = ranked[:3]
+        else:
+            best_score = 1.0
+            top_chunks = [(1.0, p) for p in retrieved_payloads[:3]]
+
+        is_filtered = self._has_active_filters(meta or {})
+        threshold = self.filtered_threshold if is_filtered else self.unfiltered_threshold
+
+        if best_score < threshold:
+            return "Insufficient context.", t_ret, 0.0, best_score, []
+
+        context = "\n\n".join([f"[{p.get('page_or_section','')}] {p.get('text','')}" for s, p in top_chunks])
+        citations = [p.get('source_file', '') for s, p in top_chunks]
+
+        prompt = f"""Answer using the provided context below.
+Context:
+{context}
+
+Question: {query}
+Answer:"""
+
+        t1 = time.time()
+        ans = "Error generating response."
+        if llm_generate_fn:
+            ans = llm_generate_fn(prompt)
+        else:
+            try:
+                call_kwargs = {}
+                if self.api_base:
+                    call_kwargs["api_base"] = self.api_base
+                if self.api_key:
+                    call_kwargs["api_key"] = self.api_key
+                resp = litellm.completion(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    **call_kwargs
+                )
+                ans = resp.choices[0].message.content.strip()
+            except Exception as e:
+                ans = f"LLM generation failed: {e}"
+        t_gen = time.time() - t1
+
+        return ans, t_ret, t_gen, best_score, citations

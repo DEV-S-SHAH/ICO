@@ -1,0 +1,256 @@
+import pytest
+import asyncio
+import json
+import os
+import hashlib
+import threading
+import time
+
+import sys
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+from examples.financial_schema import financial_schema, extract_fields
+from ico_cache.core.cache_engine import CacheEngine, _canonical_meta_suffix
+from ico_cache.core.metadata_guard import hard_gate
+from ico_cache.backends.vector.qdrant_store import QdrantStore
+from ico_cache.backends.exact.redis_store import RedisStore
+from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
+from qdrant_client.models import VectorParams, Distance
+
+REDIS_PASSWORD = "myredissecret"
+FILTER_KEYS    = ["entity", "quarter", "topic"]
+
+@pytest.fixture
+def base_path():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/sec-filings-corpus/datasets/queries"))
+
+@pytest.fixture
+def make_engine():
+    def _make(l2_coll="l2_cache", l3_coll="l3_cache"):
+        engine = CacheEngine(
+            embedder     = FastEmbedder(),
+            vector_store = QdrantStore(host="localhost", port=6333),
+            exact_store  = RedisStore(host="localhost", port=6379, password=REDIS_PASSWORD),
+            schema       = financial_schema,
+            metadata_filter_keys=FILTER_KEYS,
+            adaptive_threshold=True,
+            target_hit_rate=0.80,
+            min_threshold=0.70,
+            max_threshold=0.95,
+            adjustment_rate=0.01,
+        )
+        engine._l2_collection = l2_coll
+        engine._l3_collection = l3_coll
+        return engine
+    return _make
+
+def load_jsonl(path):
+    items = []
+    with open(path) as f:
+        for line in f:
+            if line.strip():
+                items.append(json.loads(line.strip()))
+    return items
+
+def test_1_query_generation_audit(base_path):
+    paraphrases = load_jsonl(os.path.join(base_path, "paraphrases.jsonl"))
+    near_miss   = load_jsonl(os.path.join(base_path, "near_miss_negatives.jsonl"))
+    
+    entity_swap  = sum(1 for r in near_miss
+        if extract_fields(r["query_1"])["entity"] and extract_fields(r["query_2"])["entity"]
+        and extract_fields(r["query_1"])["entity"] != extract_fields(r["query_2"])["entity"])
+    quarter_swap = sum(1 for r in near_miss
+        if extract_fields(r["query_1"])["quarter"] and extract_fields(r["query_2"])["quarter"]
+        and extract_fields(r["query_1"])["quarter"] != extract_fields(r["query_2"])["quarter"])
+    topic_swap   = sum(1 for r in near_miss
+        if extract_fields(r["query_1"])["entity"] == extract_fields(r["query_2"])["entity"]
+        and extract_fields(r["query_1"])["topic"] and extract_fields(r["query_2"])["topic"]
+        and extract_fields(r["query_1"])["topic"] != extract_fields(r["query_2"])["topic"])
+
+    total_classified = entity_swap + quarter_swap + topic_swap
+    assert total_classified >= 90, "Near-miss coverage insufficient"
+
+    para_same = sum(1 for r in paraphrases
+        if extract_fields(r["query_1"])["entity"] == extract_fields(r["query_2"])["entity"])
+    assert para_same == len(paraphrases), "Mismatched entities in paraphrases"
+
+@pytest.mark.asyncio
+async def test_2_false_hit_check(make_engine, base_path):
+    engine = make_engine()
+    qc = engine.vector_store.qc
+    near_miss = load_jsonl(os.path.join(base_path, "near_miss_negatives.jsonl"))
+    
+    false_hits = 0
+    for i, pair in enumerate(near_miss):
+        coll_name = f"v2_pair_{i}"
+        if qc.collection_exists(coll_name):
+            qc.delete_collection(coll_name)
+        qc.create_collection(coll_name, vectors_config=VectorParams(size=384, distance=Distance.COSINE))
+
+        q1, q2 = pair["query_1"], pair["query_2"]
+        meta1 = {k: v for k, v in extract_fields(q1).items() if v is not None}
+        meta2 = {k: v for k, v in extract_fields(q2).items() if v is not None}
+
+        emb1 = engine.embedder.embed(q1)
+        fake_resp = {"answer": f"pair_{i}"}
+
+        from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, IsEmptyCondition, PayloadField
+        qc.upsert(coll_name, points=[
+            PointStruct(id=i, vector=emb1, payload={"query": q1, "answer": fake_resp, "meta": meta1})
+        ])
+
+        emb2 = engine.embedder.embed(q2)
+        conditions = []
+        for k, v in meta2.items():
+            conditions.append(
+                Filter(should=[
+                    FieldCondition(key=f"meta.{k}", match=MatchValue(value=v)),
+                    IsEmptyCondition(is_empty=PayloadField(key=f"meta.{k}"))
+                ])
+            )
+        q_filter = Filter(must=conditions) if conditions else None
+
+        hits = qc.query_points(
+            collection_name=coll_name,
+            query=emb2,
+            query_filter=q_filter,
+            limit=1,
+            score_threshold=0.85,
+        ).points
+
+        if hits:
+            cached_meta = hits[0].payload.get("meta", {})
+            if hard_gate(meta2, cached_meta, FILTER_KEYS):
+                false_hits += 1
+
+        qc.delete_collection(coll_name)
+    
+    assert false_hits == 0, f"Found {false_hits} false hits"
+
+@pytest.mark.asyncio
+async def test_3_l3_context(make_engine):
+    should_hit = [
+        {"query": "What did they say about revenue?", "ctx_store": "The user is asking about WMT.", "ctx_query": "The user is asking about WMT."},
+        {"query": "What did they say about margins?", "ctx_store": "The user is asking about JPM.", "ctx_query": "The user is asking about JPM."},
+    ]
+    should_miss = [
+        {"query": "What did they say about revenue?", "ctx_store": "The user is asking about WMT.", "ctx_query": "The user is asking about MSFT."},
+        {"query": "What did they say about margins?", "ctx_store": "The user is asking about JPM.", "ctx_query": "The user is asking about GOOGL."},
+    ]
+    
+    engine = make_engine()
+    qc = engine.vector_store.qc
+    for coll in ["l2_v3_test", "l3_v3_test"]:
+        if qc.collection_exists(coll):
+            qc.delete_collection(coll)
+
+    qc.create_collection("l2_v3_test", vectors_config=VectorParams(size=384, distance=Distance.COSINE))
+    qc.create_collection("l3_v3_test", vectors_config={
+        "query":   VectorParams(size=384, distance=Distance.COSINE),
+        "context": VectorParams(size=384, distance=Distance.COSINE),
+    })
+
+    engine._l2_collection = "l2_v3_test"
+    engine._l3_collection = "l3_v3_test"
+    engine._collections_setup = True
+
+    # Monkeypatch for test
+    async def _patched_write_l3(query, context, generated, meta=None):
+        effective_meta = engine._auto_meta(query, meta)
+        ctx_meta = extract_fields(context)
+        full_meta = {**effective_meta, **{k: v for k, v in ctx_meta.items() if v is not None}}
+        emb_q = engine.embedder.embed(query)
+        emb_c = engine.embedder.embed(context)
+        key_raw = query + ":" + context + _canonical_meta_suffix(full_meta)
+        await engine.vector_store.aqc.upsert(
+            collection_name="l3_v3_test",
+            points=[{"id": hash(key_raw) % (10 ** 10), "vector": {"query": emb_q, "context": emb_c}, "payload": {"query": query, "context": context, "answer": generated, "meta": full_meta}}]
+        )
+    engine.async_write_l3 = _patched_write_l3
+
+    async def _patched_get_l3(query, context, meta=None):
+        if not context or not context.strip(): return None
+        effective_meta = engine._auto_meta(query, meta)
+        emb_q = engine.embedder.embed(query)
+        emb_c = engine.embedder.embed(context)
+        q_filter = engine.build_meta_filter(effective_meta)
+
+        hits_q = await engine.vector_store.aqc.query_points(collection_name="l3_v3_test", query=emb_q, using="query", query_filter=q_filter, limit=5, score_threshold=engine.thresh_ctx_q)
+        if not hits_q.points: return None
+
+        hits_c = await engine.vector_store.aqc.query_points(collection_name="l3_v3_test", query=emb_c, using="context", query_filter=q_filter, limit=5, score_threshold=engine.thresh_ctx_c)
+        if not hits_c.points: return None
+
+        q_ids = {h.id for h in hits_q.points}
+        c_ids = {h.id for h in hits_c.points}
+        common = q_ids.intersection(c_ids)
+
+        incoming_ctx_meta = extract_fields(context)
+        for cid in common:
+            h = next(h for h in hits_q.points if h.id == cid)
+            cached_payload = h.payload
+            cached_ctx_meta = extract_fields(cached_payload.get("context", ""))
+            cached_meta = cached_payload.get("meta", {})
+            full_cached_meta = {**cached_meta, **{k: v for k, v in cached_ctx_meta.items() if v is not None}}
+            full_incoming_meta = {**effective_meta, **{k: v for k, v in incoming_ctx_meta.items() if v is not None}}
+            if hard_gate(full_incoming_meta, full_cached_meta, engine.metadata_filter_keys):
+                return cached_payload.get("answer")
+        return None
+    engine.get_l3 = _patched_get_l3
+
+    for pair in should_hit:
+        await engine.async_write_l3(pair["query"], pair["ctx_store"], {"answer": "hit"})
+
+    for pair in should_hit:
+        assert await engine.get_l3(pair["query"], pair["ctx_query"]) is not None, "False negative"
+
+    for pair in should_miss:
+        assert await engine.get_l3(pair["query"], pair["ctx_query"]) is None, "False positive"
+
+@pytest.mark.asyncio
+async def test_4_concurrency(make_engine):
+    engine = make_engine()
+    QUERY = "What was MSFT's revenue in Q3?"
+    META  = {"entity": "MSFT", "quarter": "Q3", "topic": "revenue"}
+
+    class GenerationCounter:
+        def __init__(self):
+            self.count = 0
+            self.lock = threading.Lock()
+        def record(self):
+            with self.lock: self.count += 1
+
+    async def _simulate(counter):
+        if (await engine.resolve(QUERY, meta=META))["source"] == "MISS":
+            counter.record()
+            fake_resp = {"answer": "Generated answer", "query": QUERY}
+            engine.set_l1(QUERY, fake_resp, META)
+            await engine.async_write_l2(QUERY, fake_resp, META)
+
+    for n in [20]:
+        counter = GenerationCounter()
+        effective_meta = engine._auto_meta(QUERY, META)
+        raw_key = engine._normalize(QUERY) + _canonical_meta_suffix(effective_meta)
+        engine.exact_store.r.delete("l1:" + hashlib.sha256(raw_key.encode()).hexdigest())
+
+        await asyncio.gather(*[_simulate(counter) for _ in range(n)])
+        assert counter.count <= 1
+
+@pytest.mark.asyncio
+async def test_5_adaptive_threshold(make_engine):
+    engine = make_engine()
+    for _ in range(50):
+        engine._update_adaptive_threshold(hit=False)
+    assert engine.thresh_semantic < 0.85
+
+    q_stored   = "What was MSFT revenue in Q1?"
+    q_incoming = "What was AAPL revenue in Q1?"
+    meta_stored   = {"entity": "MSFT", "quarter": "Q1", "topic": "revenue"}
+    meta_incoming = {"entity": "AAPL", "quarter": "Q1", "topic": "revenue"}
+
+    await engine.async_write_l2(q_stored, {"answer": "MSFT Q1."}, meta_stored)
+    result = await engine.resolve(q_incoming, meta=meta_incoming)
+    assert result["source"] == "MISS"
+    assert hard_gate(meta_incoming, meta_stored, engine.metadata_filter_keys) is False

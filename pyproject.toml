@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ico-cache-monorepo"
+version = "0.1.0"
+description = "ICO-Cache Monorepo"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[tool.uv.workspace]
+members = [
+    "packages/ico-cache-py",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = false
+disable_error_code = ["assignment", "call-arg", "arg-type", "return-value", "list-item", "import-untyped"]
+

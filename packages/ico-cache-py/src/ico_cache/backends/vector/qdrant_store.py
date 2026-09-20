@@ -1,0 +1,60 @@
+from typing import List, Any, Optional
+from qdrant_client import QdrantClient, AsyncQdrantClient
+from qdrant_client.models import VectorParams, Distance
+from ..base import BaseVectorStore
+
+class QdrantStore(BaseVectorStore):
+    def __init__(self, host: str = "localhost", port: int = 6333):
+        self.qc = QdrantClient(host, port=port, check_compatibility=False)
+        self.aqc = AsyncQdrantClient(host, port=port, check_compatibility=False)
+
+    async def insert(self, collection: str, id: int, vector: Any, payload: dict):
+        await self.aqc.upsert(
+            collection_name=collection,
+            points=[{
+                "id": id,
+                "vector": vector,
+                "payload": payload
+            }]
+        )
+
+    async def search(self, collection: str, vector: Any, query_filter: Any, limit: int, score_threshold: float, using: Optional[str] = None, **kwargs: Any) -> List[Any]:
+        # Using synchronous client for search to avoid blocking issues, or await async
+        if using:
+            hits = self.qc.query_points(
+                collection_name=collection,
+                query=vector,
+                using=using,
+                query_filter=query_filter,
+                limit=limit,
+                score_threshold=score_threshold
+            ).points
+        else:
+            hits = self.qc.query_points(
+                collection_name=collection,
+                query=vector,
+                query_filter=query_filter,
+                limit=limit,
+                score_threshold=score_threshold
+            ).points
+        return hits
+
+    async def delete(self, collection: str, id: int):
+        await self.aqc.delete(collection_name=collection, points_selector=[id])
+
+    def collection_exists(self, collection: str) -> bool:
+        return self.qc.collection_exists(collection)
+
+    def create_collection(self, collection: str, config: Any = None):
+        if config is None:
+            config = VectorParams(size=384, distance=Distance.COSINE)
+        elif isinstance(config, dict):
+            # parse custom dict to VectorParams
+            new_config = {}
+            for k, v in config.items():
+                if isinstance(v, dict):
+                    new_config[k] = VectorParams(size=v["size"], distance=Distance.COSINE)
+                else:
+                    new_config[k] = v
+            config = new_config
+        self.qc.create_collection(collection, vectors_config=config)

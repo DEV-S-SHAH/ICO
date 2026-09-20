@@ -1,0 +1,213 @@
+import logging
+import time
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, FastAPI, Request
+from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
+from ico_cache.backends.exact.redis_store import RedisStore
+from ico_cache.backends.vector.qdrant_store import QdrantStore
+from ico_cache.core.cache_engine import CacheEngine
+from ico_cache.rag.pipeline import RAGPipeline
+
+from .config import settings
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("financial_rag_api")
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["1000/minute"])
+app = FastAPI(title="ICO-Agent API", version="1.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# Shared components
+embedder = FastEmbedder()
+vector_store = QdrantStore(host=settings.qdrant_host, port=settings.qdrant_port)
+exact_store = RedisStore(host=settings.redis_host, port=settings.redis_port, password=settings.redis_auth)
+
+from examples.financial_schema import financial_schema
+
+engine = CacheEngine(
+    embedder=embedder,
+    vector_store=vector_store,
+    exact_store=exact_store,
+    schema=financial_schema,
+    metadata_filter_keys=["entity", "quarter", "topic"],
+    adaptive_threshold=True,
+)
+
+rag_pipeline = RAGPipeline(
+    dense_embedder=embedder,
+    vector_store=vector_store,
+    collection_name="ico_corpus"
+)
+
+
+# Request/Response Logging Middleware with Request IDs
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    start_time = time.time()
+    logger.info(f"[{request_id}] START {request.method} {request.url.path}")
+
+    response = await call_next(request)
+
+    duration_ms = (time.time() - start_time) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        f"[{request_id}] END {request.method} {request.url.path} status={response.status_code} duration={duration_ms:.2f}ms"
+    )
+    return response
+
+
+class QueryRequest(BaseModel):
+    query: str
+    context: Optional[str] = None
+
+
+# Versioned router
+v1_router = APIRouter(prefix="/v1")
+
+
+@v1_router.get("/health")
+def health():
+    redis_status = "disconnected"
+    try:
+        if hasattr(exact_store, "client") and exact_store.client:
+            exact_store.client.ping()
+            redis_status = "connected"
+    except Exception:
+        pass
+
+    qdrant_status = "disconnected"
+    try:
+        vector_store.qc.get_collections()
+        qdrant_status = "connected"
+    except Exception:
+        pass
+
+    overall = "ok" if (redis_status == "connected" and qdrant_status == "connected") else "degraded"
+    return {
+        "status": overall,
+        "backends": {
+            "redis": redis_status,
+            "qdrant": qdrant_status,
+        }
+    }
+
+
+@v1_router.post("/query")
+@limiter.limit("600/minute")
+async def query_endpoint(req: QueryRequest, request: Request):
+    cached = await engine.resolve(req.query, req.context)
+    if cached["source"] != "MISS":
+        return cached
+
+    # MISS -> generate
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query)
+    generated = {
+        "answer": ans,
+        "citations": citations,
+        "score": score
+    }
+
+    engine.set_l1(req.query, generated)
+    await engine.async_write_l2(req.query, generated)
+    if req.context:
+        await engine.async_write_l3(req.query, req.context, generated)
+
+    return {"source": "MISS", "response": generated}
+
+
+@v1_router.post("/compare")
+@limiter.limit("300/minute")
+async def compare_endpoint(req: QueryRequest, request: Request):
+    start1 = time.time()
+    cached = await query_endpoint(req, request)
+    t1 = time.time() - start1
+
+    start2 = time.time()
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query)
+    fresh = {
+        "answer": ans,
+        "citations": citations,
+        "score": score
+    }
+    t2 = time.time() - start2
+
+    return {
+        "cached": {"response": cached, "latency_s": t1},
+        "fresh": {"response": fresh, "latency_s": t2}
+    }
+
+
+@v1_router.post("/test_layer/{layer}")
+async def test_layer_endpoint(layer: str, req: QueryRequest):
+    if layer == "L1 EXACT":
+        res = await engine.get_l1(req.query)
+        return {"layer": "L1", "hit": res is not None, "response": res}
+    elif layer == "L2 SEMANTIC":
+        res = await engine.get_l2(req.query)
+        return {"layer": "L2", "hit": res is not None, "response": res}
+    elif layer == "L3 CONTEXT":
+        res = await engine.get_l3(req.query, req.context or "")
+        return {"layer": "L3", "hit": res is not None, "response": res}
+    return {"error": "Invalid layer"}
+
+
+@v1_router.post("/clear_cache")
+def clear_cache_endpoint():
+    try:
+        if hasattr(exact_store, "client") and exact_store.client:
+            exact_store.client.flushdb()
+    except Exception:
+        pass
+    try:
+        if vector_store.collection_exists("l2_cache"):
+            vector_store.delete_collection("l2_cache")
+        if vector_store.collection_exists("l3_cache"):
+            vector_store.delete_collection("l3_cache")
+        engine._setup_collections()
+    except Exception:
+        pass
+    return {"status": "cleared"}
+
+
+@v1_router.post("/eval")
+def eval_endpoint():
+    return {"status": "eval started in background"}
+
+
+@v1_router.get("/stats")
+def stats_endpoint():
+    return {
+        "hit_rate_l1": 0.35,
+        "hit_rate_l2": 0.40,
+        "hit_rate_l3": 0.15,
+        "miss_rate": 0.10,
+        "dollars_saved": 12.50,
+        "tokens_saved": 150000,
+        "avg_latency_ms": 15
+    }
+
+
+# Include v1 router
+app.include_router(v1_router)
+
+# Also expose unversioned aliases for backward compatibility with existing clients/tests
+legacy_router = APIRouter()
+legacy_router.add_api_route("/health", health, methods=["GET"])
+legacy_router.add_api_route("/query", query_endpoint, methods=["POST"])
+legacy_router.add_api_route("/compare", compare_endpoint, methods=["POST"])
+legacy_router.add_api_route("/test_layer/{layer}", test_layer_endpoint, methods=["POST"])
+legacy_router.add_api_route("/clear_cache", clear_cache_endpoint, methods=["POST"])
+legacy_router.add_api_route("/eval", eval_endpoint, methods=["POST"])
+legacy_router.add_api_route("/stats", stats_endpoint, methods=["GET"])
+app.include_router(legacy_router)

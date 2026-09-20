@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ico-cache"
+version = "0.1.0"
+description = "ICO-Cache: Generalized LLM Semantic Cache"
+authors = [{name = "Dev"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.110.0,<1.0.0",
+    "uvicorn>=0.28.0,<1.0.0",
+    "qdrant-client>=1.8.0,<2.0.0",
+    "redis>=5.0.0,<6.0.0",
+    "fastembed>=0.2.0,<1.0.0",
+    "pydantic>=2.6.0,<3.0.0",
+    "pydantic-settings>=2.2.0,<3.0.0",
+    "PyPDF2>=3.0.0,<4.0.0",
+    "beautifulsoup4>=4.12.0,<5.0.0",
+    "lancedb>=0.5.0,<1.0.0",
+    "structlog>=24.1.0,<26.0.0",
+    "litellm>=1.40.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ico_cache = ["py.typed"]

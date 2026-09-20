@@ -1,0 +1,9 @@
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY packages/ico-cache-py packages/ico-cache-py
+RUN pip install -e packages/ico-cache-py
+COPY apps/financial-rag-demo/api apps/financial-rag-demo/api
+COPY examples/sec-filings-corpus/datasets examples/sec-filings-corpus/datasets
+CMD ["uvicorn", "apps.financial-rag-demo.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

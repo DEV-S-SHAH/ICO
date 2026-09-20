@@ -1,0 +1,38 @@
+[
+  {
+    "q": "What are Apple's main risk factors in their latest 10-K?",
+    "c": "",
+    "expected": "MISS",
+    "mock_answer": "According to Apple's latest 10-K, primary risk factors include global supply chain disruptions, intense competition in consumer electronics, and regulatory scrutiny regarding the App Store."
+  },
+  {
+    "q": "What risks does Apple disclose?",
+    "c": "",
+    "expected": "L2",
+    "mock_answer": "According to Apple's latest 10-K, primary risk factors include global supply chain disruptions, intense competition in consumer electronics, and regulatory scrutiny regarding the App Store."
+  },
+  {
+    "q": "What is Apple's supply chain risk?",
+    "c": "",
+    "expected": "MISS",
+    "mock_answer": "Apple's supply chain heavily relies on outsourcing partners primarily located in Asia. Risks include geopolitical tensions, component shortages, and logistical delays which could constrain product availability."
+  },
+  {
+    "q": "Can you tell me Apple's risk factors again?",
+    "c": "",
+    "expected": "L1",
+    "mock_answer": "According to Apple's latest 10-K, primary risk factors include global supply chain disruptions, intense competition in consumer electronics, and regulatory scrutiny regarding the App Store."
+  },
+  {
+    "q": "What are Microsoft's risk factors?",
+    "c": "",
+    "expected": "MISS",
+    "mock_answer": "According to Microsoft's latest filing, key risks include cybersecurity threats, intense competition in cloud computing (Azure), and the rapid pace of AI technological shifts."
+  },
+  {
+    "q": "What did they say about supply chain risk?",
+    "c": "Apple",
+    "expected": "L3",
+    "mock_answer": "Apple's supply chain heavily relies on outsourcing partners primarily located in Asia. Risks include geopolitical tensions, component shortages, and logistical delays which could constrain product availability."
+  }
+]
