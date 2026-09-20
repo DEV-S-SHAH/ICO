@@ -3,7 +3,8 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -16,10 +17,33 @@ from ico_cache.backends.vector.qdrant_store import QdrantStore
 from ico_cache.core.cache_engine import CacheEngine
 from ico_cache.rag.pipeline import RAGPipeline
 
-from .config import settings
+try:
+    from .config import settings
+except (ImportError, ValueError):
+    try:
+        from api.config import settings
+    except ImportError:
+        from config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("financial_rag_api")
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def get_tenant_from_api_key(api_key: Optional[str] = Security(api_key_header)) -> str:
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Provide a valid 'X-API-Key' header.",
+        )
+    if api_key not in settings.api_keys:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key.",
+        )
+    return settings.api_keys[api_key]
+
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["1000/minute"])
 app = FastAPI(title="ICO-Agent API", version="1.0.0")
@@ -70,6 +94,7 @@ async def request_logging_middleware(request: Request, call_next):
 class QueryRequest(BaseModel):
     query: str
     context: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 # Versioned router
@@ -105,36 +130,57 @@ def health():
 
 @v1_router.post("/query")
 @limiter.limit("600/minute")
-async def query_endpoint(req: QueryRequest, request: Request):
-    cached = await engine.resolve(req.query, req.context)
+async def query_endpoint(
+    req: QueryRequest,
+    request: Request,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if req.tenant_id is not None and req.tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot access tenant '{req.tenant_id}'.",
+        )
+    target_tenant = req.tenant_id or authed_tenant
+
+    cached = await engine.resolve(req.query, req.context, tenant_id=target_tenant)
     if cached["source"] != "MISS":
         return cached
 
     # MISS -> generate
-    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query)
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query, tenant_id=target_tenant)
     generated = {
         "answer": ans,
         "citations": citations,
         "score": score
     }
 
-    engine.set_l1(req.query, generated)
-    await engine.async_write_l2(req.query, generated)
+    engine.set_l1(req.query, generated, tenant_id=target_tenant)
+    await engine.async_write_l2(req.query, generated, tenant_id=target_tenant)
     if req.context:
-        await engine.async_write_l3(req.query, req.context, generated)
+        await engine.async_write_l3(req.query, req.context, generated, tenant_id=target_tenant)
 
     return {"source": "MISS", "response": generated}
 
 
 @v1_router.post("/compare")
 @limiter.limit("300/minute")
-async def compare_endpoint(req: QueryRequest, request: Request):
+async def compare_endpoint(
+    req: QueryRequest,
+    request: Request,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if req.tenant_id is not None and req.tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot access tenant '{req.tenant_id}'.",
+        )
+    target_tenant = req.tenant_id or authed_tenant
     start1 = time.time()
-    cached = await query_endpoint(req, request)
+    cached = await query_endpoint(req, request, authed_tenant=authed_tenant)
     t1 = time.time() - start1
 
     start2 = time.time()
-    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query)
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query, tenant_id=target_tenant)
     fresh = {
         "answer": ans,
         "citations": citations,
@@ -149,32 +195,44 @@ async def compare_endpoint(req: QueryRequest, request: Request):
 
 
 @v1_router.post("/test_layer/{layer}")
-async def test_layer_endpoint(layer: str, req: QueryRequest):
+async def test_layer_endpoint(
+    layer: str,
+    req: QueryRequest,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if req.tenant_id is not None and req.tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot access tenant '{req.tenant_id}'.",
+        )
+    target_tenant = req.tenant_id or authed_tenant
     if layer == "L1 EXACT":
-        res = await engine.get_l1(req.query)
+        res = await engine.get_l1(req.query, tenant_id=target_tenant)
         return {"layer": "L1", "hit": res is not None, "response": res}
     elif layer == "L2 SEMANTIC":
-        res = await engine.get_l2(req.query)
+        res = await engine.get_l2(req.query, tenant_id=target_tenant)
         return {"layer": "L2", "hit": res is not None, "response": res}
     elif layer == "L3 CONTEXT":
-        res = await engine.get_l3(req.query, req.context or "")
+        res = await engine.get_l3(req.query, req.context or "", tenant_id=target_tenant)
         return {"layer": "L3", "hit": res is not None, "response": res}
     return {"error": "Invalid layer"}
 
 
 @v1_router.post("/clear_cache")
-def clear_cache_endpoint():
+def clear_cache_endpoint(authed_tenant: str = Depends(get_tenant_from_api_key)):
     try:
         if hasattr(exact_store, "client") and exact_store.client:
             exact_store.client.flushdb()
     except Exception:
         pass
     try:
-        if vector_store.collection_exists("l2_cache"):
-            vector_store.delete_collection("l2_cache")
-        if vector_store.collection_exists("l3_cache"):
-            vector_store.delete_collection("l3_cache")
-        engine._setup_collections()
+        coll_l2 = engine._coll_name("l2_cache", authed_tenant)
+        coll_l3 = engine._coll_name("l3_cache", authed_tenant)
+        if vector_store.collection_exists(coll_l2):
+            vector_store.delete_collection(coll_l2)
+        if vector_store.collection_exists(coll_l3):
+            vector_store.delete_collection(coll_l3)
+        engine._setup_collections(tenant_id=authed_tenant)
     except Exception:
         pass
     return {"status": "cleared"}

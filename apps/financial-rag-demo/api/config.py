@@ -1,6 +1,6 @@
 import sys
 from typing import Optional
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,33 @@ class Settings(BaseSettings):
     langfuse_host: str = Field(default="http://localhost:3000", alias="LANGFUSE_HOST")
     langfuse_public_key: Optional[str] = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: Optional[str] = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+
+    # Auth & Multi-Tenancy (api_key -> tenant_id)
+    api_keys: dict[str, str] = Field(
+        default={
+            "dev-key-default": "default",
+            "key-tenant-a": "tenant_a",
+            "key-tenant-b": "tenant_b",
+        },
+        alias="API_KEYS",
+    )
+
+    @field_validator("api_keys", mode="before")
+    @classmethod
+    def parse_api_keys(cls, v):
+        if isinstance(v, str):
+            try:
+                import json
+                return json.loads(v)
+            except Exception:
+                mapping = {}
+                for pair in v.split(","):
+                    if ":" in pair:
+                        k, t = pair.strip().split(":", 1)
+                        mapping[k.strip()] = t.strip()
+                return mapping
+        return v
+
 
 
 def get_settings() -> Settings:

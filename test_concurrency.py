@@ -5,7 +5,8 @@ import time
 def send_query(i):
     url = "http://127.0.0.1:8000/query"
     payload = {"query": f"concurrency test query {i}"}
-    resp = requests.post(url, json=payload)
+    headers = {"X-API-Key": "dev-key-default"}
+    resp = requests.post(url, json=payload, headers=headers)
     if resp.status_code != 200:
         return False
     return True
