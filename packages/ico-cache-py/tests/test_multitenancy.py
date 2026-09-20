@@ -6,25 +6,62 @@ from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
 from ico_cache.backends.vector.lancedb_store import LanceDBStore
 from ico_cache.backends.exact.sqlite_store import SQLiteStore
 
-@pytest.fixture
-def temp_embedded_engine(tmp_path):
-    db_dir = tmp_path / "lancedb_test"
-    db_path = str(tmp_path / "cache_test.db")
-    engine = CacheEngine(
-        embedder=FastEmbedder(),
-        vector_store=LanceDBStore(uri=str(db_dir)),
-        exact_store=SQLiteStore(db_path=db_path),
-        tenant_isolation_mode="collection"
-    )
-    yield engine
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    if os.path.exists(str(db_dir)):
-        shutil.rmtree(str(db_dir), ignore_errors=True)
+from ico_cache.backends.vector.qdrant_store import QdrantStore
+from ico_cache.backends.exact.redis_store import RedisStore
+
+def is_distributed_available() -> bool:
+    try:
+        from qdrant_client import QdrantClient
+        import redis
+        qc = QdrantClient("localhost", port=6333, timeout=1, check_compatibility=False)
+        qc.get_collections()
+        r = redis.Redis(host="localhost", port=6379, password="myredissecret", socket_timeout=1)
+        r.ping()
+        return True
+    except Exception:
+        return False
+
+@pytest.fixture(params=["embedded", "distributed"])
+def temp_engine(request, tmp_path):
+    backend = request.param
+    if backend == "embedded":
+        db_dir = tmp_path / "lancedb_test"
+        db_path = str(tmp_path / "cache_test.db")
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=LanceDBStore(uri=str(db_dir)),
+            exact_store=SQLiteStore(db_path=db_path),
+            tenant_isolation_mode="collection"
+        )
+        yield engine
+        if os.path.exists(db_path):
+            os.remove(db_path)
+        if os.path.exists(str(db_dir)):
+            shutil.rmtree(str(db_dir), ignore_errors=True)
+    else:
+        if not is_distributed_available():
+            pytest.skip("Distributed stack (Qdrant + Redis) is not available")
+        vector_store = QdrantStore(host="localhost", port=6333)
+        exact_store = RedisStore(host="localhost", port=6379, password="myredissecret")
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=vector_store,
+            exact_store=exact_store,
+            tenant_isolation_mode="collection"
+        )
+        yield engine
+        # Teardown distributed resources
+        for coll in ["tenant_a_l2_cache", "tenant_b_l2_cache", "tenant_alpha_l3_cache", "tenant_beta_l3_cache"]:
+            if vector_store.collection_exists(coll):
+                vector_store.delete_collection(coll)
+        exact_store.delete_prefix("tenant_a:")
+        exact_store.delete_prefix("tenant_b:")
+        exact_store.delete_prefix("tenant_alpha:")
+        exact_store.delete_prefix("tenant_beta:")
 
 @pytest.mark.asyncio
-async def test_cross_tenant_leakage_l1(temp_embedded_engine):
-    engine = temp_embedded_engine
+async def test_cross_tenant_leakage_l1(temp_engine):
+    engine = temp_engine
     query = "What is the account balance for customer 101?"
     resp = {"balance": "$50,000"}
 
@@ -41,8 +78,8 @@ async def test_cross_tenant_leakage_l1(temp_embedded_engine):
     assert hit_b is None
 
 @pytest.mark.asyncio
-async def test_cross_tenant_leakage_l2_semantic(temp_embedded_engine):
-    engine = temp_embedded_engine
+async def test_cross_tenant_leakage_l2_semantic(temp_engine):
+    engine = temp_engine
     query_stored = "Show me the quarterly revenue report"
     query_incoming = "Give me the quarterly revenue summary"
     resp = {"revenue": "$1.2B"}
@@ -61,8 +98,8 @@ async def test_cross_tenant_leakage_l2_semantic(temp_embedded_engine):
     assert res_b["response"] is None
 
 @pytest.mark.asyncio
-async def test_cross_tenant_leakage_l3_context(temp_embedded_engine):
-    engine = temp_embedded_engine
+async def test_cross_tenant_leakage_l3_context(temp_engine):
+    engine = temp_engine
     query = "What were their risk factors?"
     context = "Confidential acquisition target Acme Corp"
     resp = {"risk": "Regulatory review pending"}
@@ -80,15 +117,29 @@ async def test_cross_tenant_leakage_l3_context(temp_embedded_engine):
     assert res_beta["response"] is None
 
 @pytest.mark.asyncio
-async def test_cross_tenant_payload_mode(tmp_path):
-    db_dir = tmp_path / "lancedb_payload_test"
-    db_path = str(tmp_path / "cache_payload_test.db")
-    engine = CacheEngine(
-        embedder=FastEmbedder(),
-        vector_store=LanceDBStore(uri=str(db_dir)),
-        exact_store=SQLiteStore(db_path=db_path),
-        tenant_isolation_mode="payload"
-    )
+@pytest.mark.parametrize("backend", ["embedded", "distributed"])
+async def test_cross_tenant_payload_mode(backend, tmp_path):
+    if backend == "embedded":
+        db_dir = tmp_path / "lancedb_payload_test"
+        db_path = str(tmp_path / "cache_payload_test.db")
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=LanceDBStore(uri=str(db_dir)),
+            exact_store=SQLiteStore(db_path=db_path),
+            tenant_isolation_mode="payload"
+        )
+    else:
+        if not is_distributed_available():
+            pytest.skip("Distributed stack (Qdrant + Redis) is not available")
+        vector_store = QdrantStore(host="localhost", port=6333)
+        exact_store = RedisStore(host="localhost", port=6379, password="myredissecret")
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=vector_store,
+            exact_store=exact_store,
+            tenant_isolation_mode="payload"
+        )
+
     query_stored = "Company financial forecast for next fiscal year"
     query_incoming = "Company financial forecast for upcoming fiscal year"
     resp = {"forecast": "+15% YoY growth"}
@@ -105,4 +156,12 @@ async def test_cross_tenant_payload_mode(tmp_path):
     res2 = await engine.resolve(query_incoming, tenant_id="tenant_2")
     assert res2["source"] == "MISS"
     assert res2["response"] is None
+
+    # Cleanup
+    if backend == "distributed":
+        for coll in ["l2_cache", "l3_cache"]:
+            if vector_store.collection_exists(coll):
+                vector_store.delete_collection(coll)
+        exact_store.delete_prefix("tenant_1:")
+        exact_store.delete_prefix("tenant_2:")
 

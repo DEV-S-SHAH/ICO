@@ -28,23 +28,33 @@ def get_embedding(text):
     return list(embedder.embed([text]))[0].tolist()
 
 
-def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant"):
+def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant", backend: str = "embedded"):
     """Ingests all three corpus types (text, structured, code) into a single tenant."""
     from ico_cache.loaders.auto_loader import AutoLoader
     from ico_cache.core.cache_engine import CacheEngine
-    from ico_cache.backends.vector.lancedb_store import LanceDBStore
-    from ico_cache.backends.exact.sqlite_store import SQLiteStore
     from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
     import asyncio
 
-    test_dir = "/tmp/ico_cache_eval_tenant"
-    os.makedirs(test_dir, exist_ok=True)
-    engine = CacheEngine(
-        embedder=FastEmbedder(),
-        vector_store=LanceDBStore(uri=os.path.join(test_dir, "lancedb")),
-        exact_store=SQLiteStore(db_path=os.path.join(test_dir, "exact.db")),
-        schema=universal_schema,
-    )
+    if backend == "qdrant":
+        from ico_cache.backends.vector.qdrant_store import QdrantStore
+        from ico_cache.backends.exact.redis_store import RedisStore
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=QdrantStore(host="localhost", port=6333),
+            exact_store=RedisStore(host="localhost", port=6379, password="myredissecret"),
+            schema=universal_schema,
+        )
+    else:
+        from ico_cache.backends.vector.lancedb_store import LanceDBStore
+        from ico_cache.backends.exact.sqlite_store import SQLiteStore
+        test_dir = "/tmp/ico_cache_eval_tenant"
+        os.makedirs(test_dir, exist_ok=True)
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=LanceDBStore(uri=os.path.join(test_dir, "lancedb")),
+            exact_store=SQLiteStore(db_path=os.path.join(test_dir, "exact.db")),
+            schema=universal_schema,
+        )
     auto_loader = AutoLoader(schema=universal_schema)
 
     corpus_paths = [
@@ -68,8 +78,8 @@ def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant"):
     return total_ingested
 
 
-def eval_harness(loader_type: str = "text"):
-    print(f"Loading datasets for loader-type: {loader_type}...")
+def eval_harness(loader_type: str = "text", backend: str = "embedded"):
+    print(f"Loading datasets for loader-type: {loader_type} (backend: {backend})...")
 
     # Determine query directory
     corpus_query_dir = os.path.join("examples/test-corpus/queries", loader_type)
@@ -90,6 +100,22 @@ def eval_harness(loader_type: str = "text"):
     context_dep = load_jsonl(os.path.join(base_dir, "context_dependent.jsonl"))
 
     print(f"Loaded {len(paraphrases)} paraphrases, {len(near_miss)} near_miss, {len(context_dep)} context_dep queries.")
+
+    qc = None
+    coll_l2 = f"eval_qdrant_l2_{loader_type}"
+    coll_l3 = f"eval_qdrant_l3_{loader_type}"
+    if backend == "qdrant":
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import VectorParams, Distance
+        qc = QdrantClient(host="localhost", port=6333, check_compatibility=False)
+        for c in [coll_l2, coll_l3]:
+            if qc.collection_exists(c):
+                qc.delete_collection(c)
+        qc.create_collection(coll_l2, vectors_config=VectorParams(size=384, distance=Distance.COSINE))
+        qc.create_collection(coll_l3, vectors_config={
+            "query": VectorParams(size=384, distance=Distance.COSINE),
+            "context": VectorParams(size=384, distance=Distance.COSINE),
+        })
 
     print(f"Evaluating L2 Semantic [{loader_type}]...")
     true_l2, false_l2 = [], []
@@ -118,8 +144,27 @@ def eval_harness(loader_type: str = "text"):
         q2_emb = np.array(get_embedding(item["query_2"]))
         sim = float(np.dot(q1_emb, q2_emb))
         false_l2.append(sim)
-        if sim >= 0.85:
-            failed_l2_pairs.append((item["query_1"], item["query_2"], sim, meta1, meta2))
+
+        if backend == "qdrant" and qc:
+            from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, IsEmptyCondition, PayloadField
+            qc.upsert(coll_l2, points=[PointStruct(id=1, vector=q1_emb.tolist(), payload={"meta": meta1, "query": item["query_1"]})])
+            conditions = [
+                Filter(should=[
+                    FieldCondition(key=f"meta.{k}", match=MatchValue(value=v)),
+                    IsEmptyCondition(is_empty=PayloadField(key=f"meta.{k}"))
+                ])
+                for k, v in meta2.items()
+            ]
+            q_filter = Filter(must=conditions) if conditions else None
+            hits = qc.query_points(collection_name=coll_l2, query=q2_emb.tolist(), query_filter=q_filter, limit=1, score_threshold=0.85).points
+            if hits:
+                cached_meta = hits[0].payload.get("meta", {})
+                if hard_gate(meta2, cached_meta, filter_keys):
+                    failed_l2_pairs.append((item["query_1"], item["query_2"], sim, meta1, meta2))
+            qc.delete(coll_l2, points_selector=[1])
+        else:
+            if sim >= 0.85:
+                failed_l2_pairs.append((item["query_1"], item["query_2"], sim, meta1, meta2))
 
     print(f"Evaluating L3 Context [{loader_type}]...")
     true_l3, false_l3 = [], []
@@ -215,12 +260,22 @@ def eval_harness(loader_type: str = "text"):
     }
 
 
-def eval_cross_type_adversarial(filepath: str = "examples/test-corpus/queries/cross_type_adversarial.jsonl"):
-    print("\n--- CROSS-TYPE ADVERSARIAL EVALUATION ---")
+def eval_cross_type_adversarial(filepath: str = "examples/test-corpus/queries/cross_type_adversarial.jsonl", backend: str = "embedded"):
+    print(f"\n--- CROSS-TYPE ADVERSARIAL EVALUATION (backend: {backend}) ---")
     items = load_jsonl(filepath)
     if not items:
         print("No cross-type adversarial query pairs found.")
         return {"total": 0, "false_hits": 0}
+
+    qc = None
+    coll_name = "eval_qdrant_adversarial"
+    if backend == "qdrant":
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import VectorParams, Distance, PointStruct
+        qc = QdrantClient(host="localhost", port=6333, check_compatibility=False)
+        if qc.collection_exists(coll_name):
+            qc.delete_collection(coll_name)
+        qc.create_collection(coll_name, vectors_config=VectorParams(size=384, distance=Distance.COSINE))
 
     false_adv = []
     gated_count = 0
@@ -240,8 +295,19 @@ def eval_cross_type_adversarial(filepath: str = "examples/test-corpus/queries/cr
         e2 = np.array(get_embedding(q2))
         sim = float(np.dot(e1, e2))
         false_adv.append(sim)
-        if sim >= thresh:
-            failed_pairs.append((q1, q2, sim, m1, m2))
+
+        if backend == "qdrant" and qc:
+            qc.upsert(coll_name, points=[PointStruct(id=1, vector=e1.tolist(), payload={"meta": m1, "query": q1})])
+            hits = qc.query_points(collection_name=coll_name, query=e2.tolist(), limit=1, score_threshold=thresh).points
+            if hits:
+                failed_pairs.append((q1, q2, sim, m1, m2))
+            qc.delete(coll_name, points_selector=[1])
+        else:
+            if sim >= thresh:
+                failed_pairs.append((q1, q2, sim, m1, m2))
+
+    if backend == "qdrant" and qc and qc.collection_exists(coll_name):
+        qc.delete_collection(coll_name)
 
     false_hits = sum(1 for x in false_adv if x >= thresh)
     max_sim = max(false_adv) if false_adv else 0.0
@@ -276,6 +342,12 @@ if __name__ == "__main__":
         help="Corpus loader type to evaluate (text, structured, code, mixed)",
     )
     parser.add_argument(
+        "--backend",
+        choices=["embedded", "qdrant"],
+        default="embedded",
+        help="Vector and storage backend (embedded or qdrant)",
+    )
+    parser.add_argument(
         "--ingest-tenant",
         action="store_true",
         help="Ingest all corpus types into one tenant before evaluation",
@@ -288,12 +360,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.ingest_tenant:
-        print("Ingesting all corpus types into tenant 'eval_unified_tenant'...")
-        n = ingest_corpus_into_tenant("eval_unified_tenant")
+        print(f"Ingesting all corpus types into tenant 'eval_unified_tenant' (backend: {args.backend})...")
+        n = ingest_corpus_into_tenant("eval_unified_tenant", backend=args.backend)
         print(f"Ingested {n} chunks into 'eval_unified_tenant'.")
 
-    eval_harness(loader_type=args.loader_type)
+    eval_harness(loader_type=args.loader_type, backend=args.backend)
 
     if args.loader_type == "mixed" or args.eval_adversarial:
-        eval_cross_type_adversarial()
+        eval_cross_type_adversarial(backend=args.backend)
 

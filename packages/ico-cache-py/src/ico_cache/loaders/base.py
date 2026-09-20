@@ -8,6 +8,7 @@ class Chunk(BaseModel):
     source_file: str
     page_or_section: str = ""
     chunk_index: int = 0
+    loader_type: str = "text"
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

@@ -1,9 +1,10 @@
 import logging
+import os
 import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Security, UploadFile, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -95,6 +96,7 @@ class QueryRequest(BaseModel):
     query: str
     context: Optional[str] = None
     tenant_id: Optional[str] = None
+    model: Optional[str] = None
 
 
 class InvalidateRequest(BaseModel):
@@ -110,8 +112,9 @@ v1_router = APIRouter(prefix="/v1")
 def health():
     redis_status = "disconnected"
     try:
-        if hasattr(exact_store, "client") and exact_store.client:
-            exact_store.client.ping()
+        client = getattr(exact_store, "client", None) or getattr(exact_store, "r", None)
+        if client:
+            client.ping()
             redis_status = "connected"
     except Exception:
         pass
@@ -152,11 +155,14 @@ async def query_endpoint(
         return cached
 
     # MISS -> generate
-    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query, tenant_id=target_tenant)
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(
+        req.query, tenant_id=target_tenant, model=req.model
+    )
     generated = {
         "answer": ans,
         "citations": citations,
-        "score": score
+        "score": score,
+        "chunks": getattr(rag_pipeline, "last_retrieved_chunks", []),
     }
 
     engine.set_l1(req.query, generated, tenant_id=target_tenant)
@@ -185,11 +191,14 @@ async def compare_endpoint(
     t1 = time.time() - start1
 
     start2 = time.time()
-    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(req.query, tenant_id=target_tenant)
+    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(
+        req.query, tenant_id=target_tenant, model=req.model
+    )
     fresh = {
         "answer": ans,
         "citations": citations,
-        "score": score
+        "score": score,
+        "chunks": getattr(rag_pipeline, "last_retrieved_chunks", []),
     }
     t2 = time.time() - start2
 
@@ -305,6 +314,41 @@ async def ingest_endpoint(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@v1_router.post("/ingest/upload", status_code=status.HTTP_200_OK)
+async def ingest_upload_endpoint(
+    file: UploadFile = File(...),
+    tenant_id: Optional[str] = Form(None),
+    force_async: Optional[bool] = Form(None),
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if tenant_id is not None and tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot ingest into '{tenant_id}'.",
+        )
+    target_tenant = tenant_id or authed_tenant
+    from ico_cache.async_ingest import job_manager
+
+    upload_dir = "/tmp/ico_uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_path = os.path.join(upload_dir, file.filename or f"upload_{uuid.uuid4().hex[:8]}")
+    with open(temp_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    try:
+        job = job_manager.submit_ingest(
+            file_path=temp_path,
+            tenant_id=target_tenant,
+            cache_engine=engine,
+            schema=financial_schema,
+            force_async=force_async,
+        )
+        return job.dict()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
 @v1_router.get("/ingest/jobs/{job_id}")
 def get_ingest_job_status(
     job_id: str,
@@ -345,6 +389,7 @@ legacy_router.add_api_route("/test_layer/{layer}", test_layer_endpoint, methods=
 legacy_router.add_api_route("/clear_cache", clear_cache_endpoint, methods=["POST"])
 legacy_router.add_api_route("/invalidate", invalidate_endpoint, methods=["POST"])
 legacy_router.add_api_route("/ingest", ingest_endpoint, methods=["POST"])
+legacy_router.add_api_route("/ingest/upload", ingest_upload_endpoint, methods=["POST"])
 legacy_router.add_api_route("/ingest/jobs/{job_id}", get_ingest_job_status, methods=["GET"])
 legacy_router.add_api_route("/eval", eval_endpoint, methods=["POST"])
 legacy_router.add_api_route("/stats", stats_endpoint, methods=["GET"])

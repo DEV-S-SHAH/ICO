@@ -1,3 +1,4 @@
+import threading
 from typing import List, Any, Optional
 from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.models import VectorParams, Distance
@@ -5,8 +6,16 @@ from ..base import BaseVectorStore
 
 class QdrantStore(BaseVectorStore):
     def __init__(self, host: str = "localhost", port: int = 6333):
+        self.host = host
+        self.port = port
         self.qc = QdrantClient(host, port=port, check_compatibility=False)
-        self.aqc = AsyncQdrantClient(host, port=port, check_compatibility=False)
+        self._local = threading.local()
+
+    @property
+    def aqc(self) -> AsyncQdrantClient:
+        if not hasattr(self._local, "client"):
+            self._local.client = AsyncQdrantClient(self.host, port=self.port, check_compatibility=False)
+        return self._local.client
 
     async def insert(self, collection: str, id: int, vector: Any, payload: dict):
         await self.aqc.upsert(

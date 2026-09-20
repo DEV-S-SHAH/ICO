@@ -6,6 +6,10 @@ class RedisStore(BaseExactStore):
     def __init__(self, host: str = "localhost", port: int = 6379, password: str = None):
         self.r = redis.Redis(host=host, port=port, password=password)
 
+    @property
+    def client(self):
+        return self.r
+
     def get(self, key: str) -> Optional[bytes]:
         return self.r.get(key)
 

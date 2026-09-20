@@ -92,8 +92,14 @@ class IngestionJobManager:
             worker.start()
             return job
         else:
-            # Run synchronously
-            self._run_ingest(job_id, file_path, tenant_id, cache_engine, schema)
+            # Run synchronously in an isolated thread to protect caller's event loop
+            worker = threading.Thread(
+                target=self._run_ingest,
+                args=(job_id, file_path, tenant_id, cache_engine, schema),
+                daemon=True,
+            )
+            worker.start()
+            worker.join()
             with self._lock:
                 return self.jobs[job_id]
 
@@ -119,10 +125,14 @@ class IngestionJobManager:
 
             try:
                 for idx, chunk in enumerate(chunks):
+                    loader_kind = getattr(chunk, "loader_type", None) or (chunk.metadata.get("loader") if isinstance(chunk.metadata, dict) else "text")
                     dummy_resp = {
                         "content": chunk.text[:200],
                         "source": chunk.source_file,
                         "section": chunk.page_or_section,
+                        "loader_type": loader_kind,
+                        "extraction_method": chunk.metadata.get("extraction_method", "direct") if isinstance(chunk.metadata, dict) else "direct",
+                        "metadata": chunk.metadata if isinstance(chunk.metadata, dict) else {},
                     }
                     cache_engine.set_l1(chunk.text[:100], dummy_resp, meta=chunk.metadata, tenant_id=tenant_id)
                     loop.run_until_complete(

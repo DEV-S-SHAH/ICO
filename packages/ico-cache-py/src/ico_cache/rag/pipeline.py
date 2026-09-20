@@ -76,7 +76,7 @@ class RAGPipeline:
             print("Retrieve error:", e)
             return []
 
-    async def generate(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", llm_generate_fn=None):
+    async def generate(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", llm_generate_fn=None, model: Optional[str] = None):
         with trace_rag_fallback(tenant_id=tenant_id, query=query) as fb:
             t0 = time.time()
             retrieved_payloads = await self.retrieve(query, meta, tenant_id=tenant_id, top_k=30)
@@ -107,7 +107,18 @@ class RAGPipeline:
                 return "Insufficient context.", t_ret, 0.0, best_score, []
 
             context = "\n\n".join([f"[{p.get('page_or_section','')}] {p.get('text','')}" for s, p in top_chunks])
-            citations = [p.get('source_file', '') for s, p in top_chunks]
+            citations = [p.get("source_file", "") for s, p in top_chunks]
+            self.last_retrieved_chunks = [
+                {
+                    "source": p.get("source_file", ""),
+                    "section": p.get("page_or_section", ""),
+                    "loader_type": p.get("loader_type") or p.get("loader") or "text",
+                    "extraction_method": p.get("extraction_method") or (p.get("meta", {}).get("extraction_method", "direct") if isinstance(p.get("meta"), dict) else "direct"),
+                    "metadata": p.get("meta") if isinstance(p.get("meta"), dict) else {},
+                    "content": p.get("text", "")[:300],
+                }
+                for s, p in top_chunks
+            ]
 
             prompt = f"""Answer using the provided context below.
 Context:
@@ -118,6 +129,7 @@ Answer:"""
 
             t1 = time.time()
             ans = "Error generating response."
+            target_model = model or self.model
             if llm_generate_fn:
                 ans = llm_generate_fn(prompt)
             else:
@@ -128,7 +140,7 @@ Answer:"""
                     if self.api_key:
                         call_kwargs["api_key"] = self.api_key
                     resp = litellm.completion(
-                        model=self.model,
+                        model=target_model,
                         messages=[{"role": "user", "content": prompt}],
                         **call_kwargs
                     )
