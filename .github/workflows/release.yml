@@ -117,7 +117,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: apps/financial-rag-demo/docker/Dockerfile
+          file: apps/financial-rag-demo/docker/Dockerfile.api
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/ico-cache:latest
