@@ -88,19 +88,27 @@ jobs:
 
       # JavaScript SDK Packaging & Publish
       - name: Build JS SDK (ico-cache-js)
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd packages/ico-cache-js
           npm ci || npm install
           npm run build
 
       - name: Publish to npm (Dry Run)
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd packages/ico-cache-js
           npm publish --dry-run
 
       - name: Publish to npm
+        if: env.NPM_TOKEN != ''
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd packages/ico-cache-js
           npm publish --access public
@@ -169,6 +177,9 @@ jobs:
           python3 scripts/smoke_test_installed.py
 
       - name: Fresh-Install Smoke Test (npm)
+        if: env.NPM_TOKEN != ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Installing published version ico-cache-js@${VERSION} from npm..."
@@ -187,7 +198,12 @@ jobs:
           echo "Yanking release on PyPI..."
           pip install twine
           twine yank --version "${VERSION}" ico-cache || true
-          echo "Deprecating release on npm..."
-          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm deprecate "ico-cache-js@${VERSION}" "Yanked due to automated post-release smoke test failure" || true
+          if [ -n "${NODE_AUTH_TOKEN}" ]; then
+            echo "Deprecating release on npm..."
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+            npm deprecate "ico-cache-js@${VERSION}" "Yanked due to automated post-release smoke test failure" || true
+          else
+            echo "NPM_TOKEN not set — skipping npm deprecation."
+          fi
           exit 1
+
