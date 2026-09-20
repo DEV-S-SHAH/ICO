@@ -25,3 +25,14 @@ class SQLiteStore(BaseExactStore):
         # Note: SQLite store doesn't support TTL out of the box in this simple implementation
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)", (key, value))
+
+    def delete(self, key: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+            return cur.rowcount > 0
+
+    def delete_prefix(self, prefix: str) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("DELETE FROM cache WHERE key LIKE ?", (f"{prefix}%",))
+            return cur.rowcount
+

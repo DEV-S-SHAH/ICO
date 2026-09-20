@@ -58,3 +58,23 @@ class QdrantStore(BaseVectorStore):
                     new_config[k] = v
             config = new_config
         self.qc.create_collection(collection, vectors_config=config)
+
+    def delete_collection(self, collection: str):
+        if self.qc.collection_exists(collection):
+            self.qc.delete_collection(collection)
+
+    async def delete_matching(self, collection: str, filter_dict: Optional[dict] = None) -> int:
+        if not self.qc.collection_exists(collection):
+            return 0
+        from qdrant_client.http import models
+        if not filter_dict:
+            self.qc.delete_collection(collection)
+            return -1
+        conditions = []
+        for k, v in filter_dict.items():
+            field_key = f"meta.{k}" if (not k.startswith("meta.") and k != "tenant_id" and k != "doc_id") else k
+            conditions.append(models.FieldCondition(key=field_key, match=models.MatchValue(value=v)))
+        q_filter = models.Filter(must=conditions)
+        await self.aqc.delete(collection_name=collection, points_selector=models.FilterSelector(filter=q_filter))
+        return len(conditions)
+

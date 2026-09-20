@@ -118,3 +118,29 @@ class LanceDBStore(BaseVectorStore):
 
     def create_collection(self, collection: str, config: Any):
         pass
+
+    def delete_collection(self, collection: str):
+        if collection in self._table_names():
+            self.db.drop_table(collection)
+
+    async def delete_matching(self, collection: str, filter_dict: Optional[dict] = None) -> int:
+        if collection not in self._table_names():
+            return 0
+        if not filter_dict:
+            self.db.drop_table(collection)
+            return -1
+        table = self.db.open_table(collection)
+        clauses = []
+        for k, v in filter_dict.items():
+            if k == "tenant_id":
+                clauses.append(f"tenant_id = '{v}'")
+            else:
+                # LanceDB stores meta as json string or payload fields
+                clauses.append(f"meta LIKE '%\"{k}\": \"{v}\"%'")
+        where_clause = " AND ".join(clauses)
+        try:
+            table.delete(where_clause)
+            return len(clauses)
+        except Exception:
+            return 0
+

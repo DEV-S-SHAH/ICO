@@ -27,6 +27,12 @@ class BaseVectorStore(ABC):
     def create_collection(self, collection: str, config: Any):
         pass
 
+    def delete_collection(self, collection: str):
+        pass
+
+    async def delete_matching(self, collection: str, filter_dict: Optional[dict] = None) -> int:
+        return 0
+
 class BaseExactStore(ABC):
     @abstractmethod
     def get(self, key: str) -> Optional[bytes]:
@@ -35,3 +41,7 @@ class BaseExactStore(ABC):
     @abstractmethod
     def set(self, key: str, value: bytes, ex: Optional[int] = None):
         pass
+
+    def delete_prefix(self, prefix: str) -> int:
+        return 0
+

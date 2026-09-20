@@ -1,7 +1,7 @@
 import logging
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
@@ -95,6 +95,11 @@ class QueryRequest(BaseModel):
     query: str
     context: Optional[str] = None
     tenant_id: Optional[str] = None
+
+
+class InvalidateRequest(BaseModel):
+    tenant_id: Optional[str] = None
+    filter: Optional[dict[str, Any]] = None
 
 
 # Versioned router
@@ -238,6 +243,27 @@ def clear_cache_endpoint(authed_tenant: str = Depends(get_tenant_from_api_key)):
     return {"status": "cleared"}
 
 
+@v1_router.post("/invalidate")
+async def invalidate_endpoint(
+    req: InvalidateRequest,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if req.tenant_id is not None and req.tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot invalidate tenant '{req.tenant_id}'.",
+        )
+    target_tenant = req.tenant_id or authed_tenant
+
+    from ico_cache.invalidation import publish_invalidation
+
+    stream_event_id = publish_invalidation(exact_store, tenant_id=target_tenant, filter_dict=req.filter)
+    result = await engine.invalidate(tenant_id=target_tenant, filter_dict=req.filter)
+    if stream_event_id:
+        result["stream_event_id"] = stream_event_id
+    return result
+
+
 @v1_router.post("/eval")
 def eval_endpoint():
     return {"status": "eval started in background"}
@@ -266,6 +292,7 @@ legacy_router.add_api_route("/query", query_endpoint, methods=["POST"])
 legacy_router.add_api_route("/compare", compare_endpoint, methods=["POST"])
 legacy_router.add_api_route("/test_layer/{layer}", test_layer_endpoint, methods=["POST"])
 legacy_router.add_api_route("/clear_cache", clear_cache_endpoint, methods=["POST"])
+legacy_router.add_api_route("/invalidate", invalidate_endpoint, methods=["POST"])
 legacy_router.add_api_route("/eval", eval_endpoint, methods=["POST"])
 legacy_router.add_api_route("/stats", stats_endpoint, methods=["GET"])
 app.include_router(legacy_router)

@@ -440,3 +440,72 @@ class CacheEngine:
             l3_latency_ms=round(t_l3_ms, 3),
         )
         return {"source": "MISS", "response": None}
+
+    async def invalidate(
+        self, tenant_id: str = "default", filter_dict: Optional[dict] = None
+    ) -> dict:
+        """
+        Purges matching entries from L1, L2, and L3 for a tenant.
+        """
+        # 1. Purge L1
+        l1_purged = 0
+        if hasattr(self.exact_store, "delete_prefix"):
+            l1_purged = self.exact_store.delete_prefix(f"{tenant_id}:")
+
+        # 2. Purge L2
+        coll_l2 = self._coll_name("l2_cache", tenant_id)
+        effective_l2_filter = dict(filter_dict or {})
+        if self.tenant_isolation_mode == "payload":
+            effective_l2_filter["tenant_id"] = tenant_id
+
+        l2_purged = 0
+        if hasattr(self.vector_store, "delete_matching"):
+            l2_purged = await self.vector_store.delete_matching(
+                coll_l2,
+                effective_l2_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
+            )
+        elif hasattr(self.vector_store, "delete_collection") and not filter_dict:
+            self.vector_store.delete_collection(coll_l2)
+            l2_purged = -1
+
+        # 3. Purge L3
+        coll_l3 = self._coll_name("l3_cache", tenant_id)
+        effective_l3_filter = dict(filter_dict or {})
+        if self.tenant_isolation_mode == "payload":
+            effective_l3_filter["tenant_id"] = tenant_id
+
+        l3_purged = 0
+        if hasattr(self.vector_store, "delete_matching"):
+            l3_purged = await self.vector_store.delete_matching(
+                coll_l3,
+                effective_l3_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
+            )
+        elif hasattr(self.vector_store, "delete_collection") and not filter_dict:
+            self.vector_store.delete_collection(coll_l3)
+            l3_purged = -1
+
+        # Reset collections setup cache for this tenant
+        if coll_l2 in self._collections_setup:
+            del self._collections_setup[coll_l2]
+        if coll_l3 in self._collections_setup:
+            del self._collections_setup[coll_l3]
+        self._setup_collections(tenant_id=tenant_id)
+
+        logger.info(
+            "cache_invalidated",
+            tenant_id=tenant_id,
+            l1_purged=l1_purged,
+            l2_purged=l2_purged,
+            l3_purged=l3_purged,
+            filter=filter_dict,
+        )
+
+        return {
+            "status": "success",
+            "tenant_id": tenant_id,
+            "filter": filter_dict,
+            "l1_purged": l1_purged,
+            "l2_purged": l2_purged,
+            "l3_purged": l3_purged,
+        }
+
