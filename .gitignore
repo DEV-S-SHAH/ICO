@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 *.log
 test_lancedb/
+lancedb/
+*.db
 .DS_Store
 
 # Temporary scratch scripts and logs
