@@ -385,3 +385,68 @@ def test_cross_type_adversarial_similarity_bounds():
         sim = p["similarity"]
         assert 0.8000 <= sim <= 0.8499, f"Pair out of bounds: {p}"
 
+
+def test_ingestion_job_manager_memory_bounds():
+    """
+    Verify IngestionJobManager bounded memory policy:
+    - Evicts jobs older than job_ttl_seconds after completion
+    - Enforces max_jobs capacity cap
+    """
+    import time
+    from ico_cache.async_ingest import IngestionJobManager, IngestionJob
+
+    # Test TTL eviction (e.g. 10 second TTL)
+    mgr = IngestionJobManager(job_ttl_seconds=10, max_jobs=5)
+    now = time.time()
+
+    # Create 3 jobs: one completed 20s ago (expired), one completed 5s ago (active), one processing
+    job1 = IngestionJob(
+        job_id="job_old",
+        tenant_id="t1",
+        file_path="f1",
+        file_size_bytes=100,
+        status="completed",
+        completed_at=now - 20.0,
+    )
+    job2 = IngestionJob(
+        job_id="job_recent",
+        tenant_id="t1",
+        file_path="f2",
+        file_size_bytes=100,
+        status="completed",
+        completed_at=now - 5.0,
+    )
+    job3 = IngestionJob(
+        job_id="job_running",
+        tenant_id="t1",
+        file_path="f3",
+        file_size_bytes=100,
+        status="processing",
+    )
+
+    mgr.jobs["job_old"] = job1
+    mgr.jobs["job_recent"] = job2
+    mgr.jobs["job_running"] = job3
+
+    # Cleanup with current time
+    evicted = mgr.cleanup_expired_jobs(now=now)
+    assert evicted == 1
+    assert "job_old" not in mgr.jobs
+    assert "job_recent" in mgr.jobs
+    assert "job_running" in mgr.jobs
+
+    # Test max_jobs capacity cap (cap is 5)
+    for i in range(10):
+        mgr.jobs[f"job_fill_{i}"] = IngestionJob(
+            job_id=f"job_fill_{i}",
+            tenant_id="t1",
+            file_path=f"f_{i}",
+            file_size_bytes=100,
+            status="completed",
+            completed_at=now - (10 - i),
+        )
+
+    mgr.cleanup_expired_jobs(now=now)
+    assert len(mgr.jobs) <= 5
+
+

@@ -1,10 +1,9 @@
 import json
 import logging
 import asyncio
-from typing import Optional, Any
+from typing import Optional
 from .core.cache_engine import CacheEngine
 from .backends.base import BaseExactStore
-from .backends.exact.redis_store import RedisStore
 
 logger = logging.getLogger("ico_cache.invalidation")
 

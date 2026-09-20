@@ -58,7 +58,7 @@ class TXTLoader(BaseLoader):
                 chunk_idx += 1
         else:
             # For large files (> 100 paragraphs), coalesce consecutive paragraphs up to max_chunk_chars
-            current_group = []
+            current_group: List[str] = []
             current_len = 0
             start_p = 1
 
@@ -68,8 +68,8 @@ class TXTLoader(BaseLoader):
                     coalesced_text = "\n\n".join(current_group)
                     meta = {
                         "source_file": file_path,
-                        "start_paragraph": start_p,
-                        "end_paragraph": i - 1,
+                        "start_paragraph": str(start_p),
+                        "end_paragraph": str(i - 1),
                     }
                     if effective_schema:
                         extracted = effective_schema.extract(coalesced_text)
@@ -95,8 +95,8 @@ class TXTLoader(BaseLoader):
                 coalesced_text = "\n\n".join(current_group)
                 meta = {
                     "source_file": file_path,
-                    "start_paragraph": start_p,
-                    "end_paragraph": len(raw_paragraphs),
+                    "start_paragraph": str(start_p),
+                    "end_paragraph": str(len(raw_paragraphs)),
                 }
                 if effective_schema:
                     extracted = effective_schema.extract(coalesced_text)

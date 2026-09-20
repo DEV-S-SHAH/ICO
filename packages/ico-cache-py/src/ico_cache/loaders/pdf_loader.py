@@ -35,7 +35,7 @@ class PDFLoader(BaseLoader):
             logger.warning(f"Empty PDF file (0 bytes): {file_path}")
             return []
 
-        chunks = []
+        chunks: List[Chunk] = []
 
         # 1. Attempt embedded text-layer extraction
         try:

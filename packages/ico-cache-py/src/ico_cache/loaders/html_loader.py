@@ -53,7 +53,7 @@ class HTMLLoader(BaseLoader):
                 return []
             return [_make_chunk(text, "Body", 0)]
 
-        chunks = []
+        chunks: List[Chunk] = []
         current_section = "Document"
 
         for block in blocks:

@@ -1,3 +1,5 @@
+from typing import Optional, Type
+
 from ico_cache.loaders.base import BaseLoader
 from ico_cache.loaders.txt_loader import TXTLoader
 from ico_cache.loaders.structured_loader import StructuredLoader
@@ -12,15 +14,16 @@ __all__ = [
     "AutoLoader",
 ]
 
+PDFLoader: Optional[Type[BaseLoader]] = None
 try:
-    from ico_cache.loaders.pdf_loader import PDFLoader
+    from ico_cache.loaders.pdf_loader import PDFLoader  # type: ignore[assignment]
     __all__.append("PDFLoader")
 except ImportError:
-    PDFLoader = None
+    pass
 
+HTMLLoader: Optional[Type[BaseLoader]] = None
 try:
-    from ico_cache.loaders.html_loader import HTMLLoader
+    from ico_cache.loaders.html_loader import HTMLLoader  # type: ignore[assignment]
     __all__.append("HTMLLoader")
 except ImportError:
-    HTMLLoader = None
-
+    pass

@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 from pydantic import BaseModel, Field
 
 from .loaders.auto_loader import AutoLoader
@@ -36,13 +36,54 @@ class IngestionJobManager:
     asynchronously in background tasks with queryable job status.
     """
 
-    def __init__(self, async_threshold_bytes: int = 1 * 1024 * 1024):
+    def __init__(
+        self,
+        async_threshold_bytes: int = 1 * 1024 * 1024,
+        job_ttl_seconds: int = 3600,
+        max_jobs: int = 10000,
+    ):
         self.async_threshold_bytes = async_threshold_bytes
+        self.job_ttl_seconds = job_ttl_seconds
+        self.max_jobs = max_jobs
         self.jobs: Dict[str, IngestionJob] = {}
         self._lock = threading.Lock()
 
+    def _cleanup_expired_unlocked(self, now: Optional[float] = None) -> int:
+        """Evicts completed/failed jobs older than job_ttl_seconds, and enforces max_jobs cap."""
+        ts = now if now is not None else time.time()
+        to_delete = []
+
+        # 1. Evict by TTL
+        for jid, job in self.jobs.items():
+            if job.status in ["completed", "failed"] and job.completed_at:
+                if (ts - job.completed_at) > self.job_ttl_seconds:
+                    to_delete.append(jid)
+
+        for jid in to_delete:
+            del self.jobs[jid]
+
+        # 2. Evict oldest finished jobs if exceeding capacity cap
+        if len(self.jobs) > self.max_jobs:
+            finished = sorted(
+                [j for j in self.jobs.values() if j.status in ["completed", "failed"]],
+                key=lambda x: x.completed_at or 0.0,
+            )
+            excess = len(self.jobs) - self.max_jobs
+            for j in finished[:excess]:
+                if j.job_id in self.jobs:
+                    del self.jobs[j.job_id]
+                    to_delete.append(j.job_id)
+
+        return len(to_delete)
+
+    def cleanup_expired_jobs(self, now: Optional[float] = None) -> int:
+        """Public thread-safe cleanup method."""
+        with self._lock:
+            return self._cleanup_expired_unlocked(now=now)
+
     def get_job(self, job_id: str) -> Optional[IngestionJob]:
         with self._lock:
+            self._cleanup_expired_unlocked()
             job = self.jobs.get(job_id)
             if job and job.status == "processing":
                 job.elapsed_s = time.time() - job.created_at
@@ -50,6 +91,7 @@ class IngestionJobManager:
 
     def list_jobs(self, tenant_id: Optional[str] = None) -> Dict[str, IngestionJob]:
         with self._lock:
+            self._cleanup_expired_unlocked()
             if tenant_id:
                 return {k: v for k, v in self.jobs.items() if v.tenant_id == tenant_id}
             return dict(self.jobs)

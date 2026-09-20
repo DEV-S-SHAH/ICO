@@ -24,9 +24,9 @@ class RedisStore(BaseExactStore):
         deleted = 0
         match_pattern = f"{prefix}*"
         while True:
-            cursor, keys = self.r.scan(cursor=cursor, match=match_pattern, count=100)
+            cursor, keys = self.r.scan(cursor=cursor, match=match_pattern, count=100)  # type: ignore[misc]
             if keys:
-                deleted += self.r.delete(*keys)
+                deleted += self.r.delete(*keys)  # type: ignore[operator]
             if cursor == 0:
                 break
         return deleted

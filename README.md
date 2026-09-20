@@ -156,6 +156,9 @@ docker compose up -d
 - **Streamlit Demo UI**: [http://localhost:8501](http://localhost:8501)
 - **Qdrant Dashboard**: [http://localhost:6333/dashboard](http://localhost:6333/dashboard)
 
+> [!WARNING]
+> **Demo API Keys vs Production Security**: The preset API keys (`dev-key-default`, `key-tenant-a`, `key-tenant-b`) bundled in `.env.example` and the Streamlit UI selector are **insecure local development/demo fixtures only**. For production deployments, always configure cryptographically secure tenant keys via the `API_KEYS` environment variable.
+
 ---
 
 ## Architecture Summary

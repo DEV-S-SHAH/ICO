@@ -96,8 +96,8 @@ class CodeLoader(BaseLoader):
                     "source_file": source_file,
                     "type": "function",
                     "name": node.name,
-                    "start_line": node.lineno,
-                    "end_line": end,
+                    "start_line": str(node.lineno),
+                    "end_line": str(end),
                     "docstring": doc,
                 }
                 if schema:
@@ -123,8 +123,8 @@ class CodeLoader(BaseLoader):
                     "source_file": source_file,
                     "type": "class",
                     "name": node.name,
-                    "start_line": node.lineno,
-                    "end_line": end,
+                    "start_line": str(node.lineno),
+                    "end_line": str(end),
                     "docstring": doc,
                 }
                 if schema:

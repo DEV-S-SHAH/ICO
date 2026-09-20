@@ -474,7 +474,7 @@ class CacheEngine:
                 coll_l2,
                 effective_l2_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
             )
-        elif hasattr(self.vector_store, "delete_collection") and not filter_dict:
+        elif hasattr(self.vector_store, "delete_collection") and not filter_dict and self.tenant_isolation_mode != "payload":
             self.vector_store.delete_collection(coll_l2)
             l2_purged = -1
 
@@ -490,7 +490,7 @@ class CacheEngine:
                 coll_l3,
                 effective_l3_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
             )
-        elif hasattr(self.vector_store, "delete_collection") and not filter_dict:
+        elif hasattr(self.vector_store, "delete_collection") and not filter_dict and self.tenant_isolation_mode != "payload":
             self.vector_store.delete_collection(coll_l3)
             l3_purged = -1
 

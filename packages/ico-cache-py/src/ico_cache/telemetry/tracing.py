@@ -1,6 +1,6 @@
 import time
 from contextlib import contextmanager
-from typing import Any, Generator, Optional
+from typing import Any, Generator
 from opentelemetry import trace
 from opentelemetry.trace import Tracer, Span
 

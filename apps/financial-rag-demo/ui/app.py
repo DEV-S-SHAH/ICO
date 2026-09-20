@@ -75,14 +75,18 @@ with st.sidebar:
 
     # 1. API Key Selector & Input
     st.subheader("1. Authentication")
+    # WARNING: The preset keys below ('dev-key-default', 'key-tenant-a', 'key-tenant-b')
+    # are insecure local development/demo fixtures ONLY. NEVER use them in production.
+    # Production environments must provision unique secrets via API_KEYS env var.
     preset_keys = {
-        "dev-key-default (tenant: default)": ("dev-key-default", "default"),
-        "key-tenant-a (tenant: tenant_a)": ("key-tenant-a", "tenant_a"),
-        "key-tenant-b (tenant: tenant_b)": ("key-tenant-b", "tenant_b"),
-        "Custom API Key": ("", ""),
+        "dev-key-default (tenant: default) [DEV ONLY]": ("dev-key-default", "default"),
+        "key-tenant-a (tenant: tenant_a) [DEV ONLY]": ("key-tenant-a", "tenant_a"),
+        "key-tenant-b (tenant: tenant_b) [DEV ONLY]": ("key-tenant-b", "tenant_b"),
+        "Custom Production Key": ("", ""),
     }
     selected_preset = st.selectbox("API Key Preset", list(preset_keys.keys()), index=0)
-    if selected_preset == "Custom API Key":
+    st.caption("⚠️ **Dev Notice:** Presets above are local development fixtures only. Set custom keys for production.")
+    if selected_preset == "Custom Production Key":
         custom_key = st.text_input("Custom API Key", value=st.session_state.api_key, type="password")
         st.session_state.api_key = custom_key
     else:
