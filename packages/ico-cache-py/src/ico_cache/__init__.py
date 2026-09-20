@@ -1,5 +1,7 @@
-from .core.cache_engine import CacheEngine as ICOCache
+from .core.cache_engine import CacheEngine, CacheEngine as ICOCache
 from .core.config import ICOConfig
-from .loaders.auto_loader import ingest
+from .loaders.auto_loader import ingest, AutoLoader
 
-__all__ = ["ICOCache", "ICOConfig", "ingest"]
+__version__ = "0.1.0"
+
+__all__ = ["CacheEngine", "ICOCache", "ICOConfig", "ingest", "AutoLoader", "__version__"]

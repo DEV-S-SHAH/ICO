@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-qdrant-client
-redis
-fastembed
-pydantic
-PyPDF2
-beautifulsoup4
-lancedb
