@@ -23,7 +23,7 @@ jobs:
           pip install ruff mypy pytest pytest-asyncio
           pip install -e packages/ico-cache-py
           # Demo app deps (not in core package)
-          pip install slowapi litellm streamlit requests pdf2image pytesseract lancedb
+          pip install -r apps/financial-rag-demo/requirements-demo.txt
 
       - name: Lint (Ruff)
         run: |
