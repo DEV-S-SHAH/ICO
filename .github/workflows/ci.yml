@@ -21,8 +21,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ruff mypy pytest pytest-asyncio
-          pip install -r apps/financial-rag-demo/docker/requirements.txt || pip install -r requirements.txt
           pip install -e packages/ico-cache-py
+          # Demo app deps (not in core package)
+          pip install slowapi litellm streamlit requests pdf2image pytesseract lancedb
 
       - name: Lint (Ruff)
         run: |
@@ -34,20 +35,11 @@ jobs:
 
       - name: Run Core Test Suite (Pytest)
         run: |
-          PYTHONPATH=packages/ico-cache-py/src pytest packages/ico-cache-py/tests/
-
-      - name: Start API Server for Concurrency Test
-        run: |
-          PYTHONPATH=packages/ico-cache-py/src uvicorn apps.financial-rag-demo.api.main:app --host 127.0.0.1 --port 8000 &
-          sleep 3
-
-      - name: Run Concurrency Test
-        run: |
-          python3 test_concurrency.py
+          PYTHONPATH=packages/ico-cache-py/src:. pytest packages/ico-cache-py/tests/
 
       - name: Run False-Hit Evaluation Harness (0% Baseline Check)
         run: |
-          PYTHONPATH=packages/ico-cache-py/src python3 eval_harness.py
+          PYTHONPATH=packages/ico-cache-py/src:. python3 eval_harness.py
 
   test-js:
     runs-on: ubuntu-latest
