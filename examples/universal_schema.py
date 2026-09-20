@@ -18,6 +18,7 @@ _ENTITY_TOKENS: List[str] = [
     "North", "South", "East", "West", "Acme", "TXN-101", "TXN-102",
     # Code / AST Classes
     "OrderProcessor", "WorkerHandler", "InventoryManager", "OrderItem", "PaymentGateway",
+    "FinancialService", "FinancialLedger",
 ]
 
 _QUARTER_TOKENS: List[str] = [

@@ -49,8 +49,12 @@ def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant"):
 
     corpus_paths = [
         "examples/test-corpus/text/standard.txt",
+        "examples/test-corpus/text/clean.pdf",
+        "examples/test-corpus/text/malformed.html",
         "examples/test-corpus/structured/standard.jsonl",
         "examples/test-corpus/code/standard.py",
+        "examples/test-corpus/code/standard.js",
+        "examples/test-corpus/code/standard.go",
     ]
     total_ingested = 0
     for path in corpus_paths:
@@ -211,6 +215,58 @@ def eval_harness(loader_type: str = "text"):
     }
 
 
+def eval_cross_type_adversarial(filepath: str = "examples/test-corpus/queries/cross_type_adversarial.jsonl"):
+    print("\n--- CROSS-TYPE ADVERSARIAL EVALUATION ---")
+    items = load_jsonl(filepath)
+    if not items:
+        print("No cross-type adversarial query pairs found.")
+        return {"total": 0, "false_hits": 0}
+
+    false_adv = []
+    gated_count = 0
+    failed_pairs = []
+    thresh = 0.85
+
+    for item in items:
+        q1, q2 = item["query_1"], item["query_2"]
+        m1 = universal_extract_fields(q1)
+        m2 = universal_extract_fields(q2)
+        if not hard_gate(m1, m2, universal_schema.filter_keys):
+            gated_count += 1
+            false_adv.append(0.0)
+            continue
+
+        e1 = np.array(get_embedding(q1))
+        e2 = np.array(get_embedding(q2))
+        sim = float(np.dot(e1, e2))
+        false_adv.append(sim)
+        if sim >= thresh:
+            failed_pairs.append((q1, q2, sim, m1, m2))
+
+    false_hits = sum(1 for x in false_adv if x >= thresh)
+    max_sim = max(false_adv) if false_adv else 0.0
+    print(f"Adversarial Total Query Pairs: {len(items)}")
+    print(f"Adversarial Gated by Schema: {gated_count}/{len(items)}")
+    print(f"Adversarial Max Similarity: {max_sim:.4f}")
+    print(f"Adversarial False Hits (> {thresh:.3f}): {false_hits}/{len(items)} ({(false_hits/len(items))*100:.2f}%)")
+
+    if false_hits > 0:
+        print("\n[FAILED CROSS-TYPE ADVERSARIAL PAIRS]")
+        for q1, q2, sim, m1, m2 in failed_pairs[:5]:
+            print(f"  Q1: {q1}\n  Q2: {q2}\n  Sim: {sim:.4f}\n  M1: {m1}, M2: {m2}\n")
+        raise AssertionError(
+            f"Cross-type adversarial false-hit regression: {false_hits}/{len(items)} above {thresh}. Baseline is 0%."
+        )
+
+    return {
+        "total": len(items),
+        "gated": gated_count,
+        "max_similarity": max_sim,
+        "false_hits": false_hits,
+        "false_hit_rate": (false_hits / len(items)) * 100.0,
+    }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ICO-Cache Evaluation Harness")
     parser.add_argument(
@@ -222,13 +278,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ingest-tenant",
         action="store_true",
-        help="Ingest all three corpus types into one tenant before evaluation",
+        help="Ingest all corpus types into one tenant before evaluation",
+    )
+    parser.add_argument(
+        "--eval-adversarial",
+        action="store_true",
+        help="Run cross-type adversarial query evaluation",
     )
     args = parser.parse_args()
 
     if args.ingest_tenant:
-        print("Ingesting all three corpus types into tenant 'eval_unified_tenant'...")
+        print("Ingesting all corpus types into tenant 'eval_unified_tenant'...")
         n = ingest_corpus_into_tenant("eval_unified_tenant")
         print(f"Ingested {n} chunks into 'eval_unified_tenant'.")
 
     eval_harness(loader_type=args.loader_type)
+
+    if args.loader_type == "mixed" or args.eval_adversarial:
+        eval_cross_type_adversarial()
+

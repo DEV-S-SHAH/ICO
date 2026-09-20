@@ -10,6 +10,7 @@
 {"query": "What did they say about margins?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about TGT.", "label": false}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about TGT.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about TGT.", "context_2": "The user is asking about UNH.", "label": false}
+{"query": "What did they say about R&D?", "context_1": "The user is asking about AAPL.", "context_2": "The user is asking about AAPL.", "label": true}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about GS.", "context_2": "The user is asking about BAC.", "label": false}
 {"query": "What did they say about revenue?", "context_1": "The user is asking about BAC.", "context_2": "The user is asking about UNH.", "label": false}
 {"query": "What did they say about competition?", "context_1": "The user is asking about PFE.", "context_2": "The user is asking about AAPL.", "label": false}
@@ -33,14 +34,18 @@
 {"query": "What did they say about margins?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about BAC.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about GS.", "context_2": "The user is asking about UNH.", "label": false}
 {"query": "What did they say about R&D?", "context_1": "The user is asking about GS.", "context_2": "The user is asking about JNJ.", "label": false}
+{"query": "What did they say about supply chain?", "context_1": "The user is asking about BAC.", "context_2": "The user is asking about BAC.", "label": true}
 {"query": "What did they say about revenue?", "context_1": "The user is asking about WMT.", "context_2": "The user is asking about JNJ.", "label": false}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about AAPL.", "context_2": "The user is asking about GOOGL.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about GS.", "context_2": "The user is asking about TGT.", "label": false}
+{"query": "What did they say about margins?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about JPM.", "label": true}
+{"query": "What did they say about supply chain?", "context_1": "The user is asking about COST.", "context_2": "The user is asking about COST.", "label": true}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about BAC.", "label": false}
 {"query": "What did they say about competition?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about UNH.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about JNJ.", "context_2": "The user is asking about GOOGL.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about BAC.", "context_2": "The user is asking about PFE.", "label": false}
 {"query": "What did they say about competition?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about UNH.", "label": false}
+{"query": "What did they say about margins?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about UNH.", "label": true}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about JNJ.", "context_2": "The user is asking about MSFT.", "label": false}
 {"query": "What did they say about revenue?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about JNJ.", "label": false}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about BAC.", "label": false}
@@ -70,19 +75,23 @@
 {"query": "What did they say about revenue?", "context_1": "The user is asking about JNJ.", "context_2": "The user is asking about WMT.", "label": false}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about BAC.", "context_2": "The user is asking about MSFT.", "label": false}
 {"query": "What did they say about competition?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about GOOGL.", "label": false}
+{"query": "What did they say about competition?", "context_1": "The user is asking about WMT.", "context_2": "The user is asking about WMT.", "label": true}
 {"query": "What did they say about competition?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about MSFT.", "label": false}
 {"query": "What did they say about revenue?", "context_1": "The user is asking about COST.", "context_2": "The user is asking about GS.", "label": false}
 {"query": "What did they say about competition?", "context_1": "The user is asking about TGT.", "context_2": "The user is asking about BAC.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about JPM.", "label": false}
+{"query": "What did they say about margins?", "context_1": "The user is asking about MSFT.", "context_2": "The user is asking about MSFT.", "label": true}
 {"query": "What did they say about revenue?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about PFE.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about AAPL.", "context_2": "The user is asking about PFE.", "label": false}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about MSFT.", "context_2": "The user is asking about AAPL.", "label": false}
 {"query": "What did they say about R&D?", "context_1": "The user is asking about AAPL.", "context_2": "The user is asking about COST.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about MSFT.", "context_2": "The user is asking about PFE.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about MSFT.", "label": false}
+{"query": "What did they say about supply chain?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about UNH.", "label": true}
 {"query": "What did they say about competition?", "context_1": "The user is asking about UNH.", "context_2": "The user is asking about MSFT.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about COST.", "context_2": "The user is asking about AAPL.", "label": false}
 {"query": "What did they say about margins?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about PFE.", "label": false}
+{"query": "What did they say about competition?", "context_1": "The user is asking about COST.", "context_2": "The user is asking about COST.", "label": true}
 {"query": "What did they say about risk factors?", "context_1": "The user is asking about JPM.", "context_2": "The user is asking about GOOGL.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about GOOGL.", "context_2": "The user is asking about JNJ.", "label": false}
 {"query": "What did they say about supply chain?", "context_1": "The user is asking about JNJ.", "context_2": "The user is asking about TGT.", "label": false}

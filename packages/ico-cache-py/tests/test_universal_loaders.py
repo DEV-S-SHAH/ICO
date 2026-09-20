@@ -120,7 +120,7 @@ def test_corpus_sane_chunk_bounds_per_file_size():
             assert 2 <= len(chunks) <= 20, f"Expected 2-20 chunks for standard file {sf}, got {len(chunks)}"
 
         # Large file (>10MB) -> bounded between 1,000 and 150,000 chunks
-        large_files = [f for f in os.listdir(cat_dir) if f.startswith("large")]
+        large_files = [f for f in os.listdir(cat_dir) if f.startswith("large.")]
         for lf in large_files:
             chunks = loader.load(os.path.join(cat_dir, lf))
             assert 1000 <= len(chunks) <= 150000, f"Expected 1000-150000 chunks for large file {lf}, got {len(chunks)}"
@@ -185,3 +185,90 @@ def test_structural_boundary_preservation():
     assert "def calculate_tax" in order_proc.text
     assert "def process_order" in order_proc.text
     assert '"status": "APPROVED"' in order_proc.text  # Full body retained, never truncated
+
+
+def test_pdf_and_html_formats():
+    """
+    Verify TextLoader format coverage:
+    - Clean PDF extracts text layer and schema metadata
+    - Scanned/OCR PDF with no text layer yields 0 chunks gracefully
+    - Malformed HTML strips malicious scripts and extracts clean content chunks
+    """
+    auto_loader = AutoLoader(schema=universal_schema)
+
+    # Clean PDF
+    clean_pdf_path = os.path.join(CORPUS_ROOT, "text/clean.pdf")
+    pdf_chunks = auto_loader.load(clean_pdf_path)
+    assert len(pdf_chunks) >= 1
+    assert "Apple Inc. (AAPL)" in pdf_chunks[0].text
+    assert pdf_chunks[0].metadata.get("entity") == "AAPL"
+
+    # Scanned OCR PDF (no text layer)
+    scanned_pdf_path = os.path.join(CORPUS_ROOT, "text/scanned_ocr.pdf")
+    scanned_chunks = auto_loader.load(scanned_pdf_path)
+    assert len(scanned_chunks) == 0
+
+    # Malformed HTML (unclosed tags, script injection)
+    html_path = os.path.join(CORPUS_ROOT, "text/malformed.html")
+    html_chunks = auto_loader.load(html_path)
+    assert len(html_chunks) >= 1
+    full_html_text = "\n".join(c.text for c in html_chunks)
+    assert "Microsoft Corporation (MSFT)" in full_html_text
+    assert "XSS Attack!" not in full_html_text
+    assert "onerror=" not in full_html_text
+    assert "Confidential copyright footer" not in full_html_text
+
+
+def test_multi_language_code_loaders():
+    """
+    Verify tree-sitter code loading across JavaScript and Go:
+    - Functions and classes are structurally bounded
+    - Never split across chunks
+    """
+    auto_loader = AutoLoader(schema=universal_schema)
+
+    # JavaScript via tree-sitter
+    js_path = os.path.join(CORPUS_ROOT, "code/standard.js")
+    js_chunks = auto_loader.load(js_path)
+    assert len(js_chunks) == 3
+    js_names = [c.metadata.get("name") for c in js_chunks]
+    assert "calculateRevenue" in js_names
+    assert "applyDiscount" in js_names
+    assert "FinancialService" in js_names
+
+    # Check JS class body integrity
+    service_chunk = next(c for c in js_chunks if c.metadata.get("name") == "FinancialService")
+    assert "processCheckout" in service_chunk.text
+    assert "approved" in service_chunk.text
+
+    # Go via tree-sitter
+    go_path = os.path.join(CORPUS_ROOT, "code/standard.go")
+    go_chunks = auto_loader.load(go_path)
+    assert len(go_chunks) == 3
+    go_names = [c.metadata.get("name") for c in go_chunks]
+    assert "CalculateMargin" in go_names
+    assert "ComputeTax" in go_names
+
+    # Check Go function body integrity
+    margin_chunk = next(c for c in go_chunks if c.metadata.get("name") == "CalculateMargin")
+    assert "return (revenue - cost) / revenue" in margin_chunk.text
+
+
+def test_large_scale_malformed_code_fallback():
+    """
+    Verify that large-scale malformed code (>1MB with scattered syntax errors)
+    produces reasonably-sized, non-degenerate chunks via AST fallback
+    rather than failing or producing one giant fallback blob.
+    """
+    code_loader = CodeLoader()
+    large_malformed_path = os.path.join(CORPUS_ROOT, "code/large_malformed.py")
+    assert os.path.exists(large_malformed_path)
+    assert os.path.getsize(large_malformed_path) > 1_000_000
+
+    chunks = code_loader.load(large_malformed_path)
+    assert 400 <= len(chunks) <= 1200
+
+    sizes = [len(c.text) for c in chunks]
+    assert min(sizes) > 100  # No empty/degenerate chunks
+    assert max(sizes) < 10_000  # No giant fallback blobs
+
