@@ -16,14 +16,14 @@ __all__ = [
 
 PDFLoader: Optional[Type[BaseLoader]] = None
 try:
-    from ico_cache.loaders.pdf_loader import PDFLoader  # type: ignore[assignment]
+    from ico_cache.loaders.pdf_loader import PDFLoader  # type: ignore[assignment]  # noqa: F401
     __all__.append("PDFLoader")
 except ImportError:
     pass
 
 HTMLLoader: Optional[Type[BaseLoader]] = None
 try:
-    from ico_cache.loaders.html_loader import HTMLLoader  # type: ignore[assignment]
+    from ico_cache.loaders.html_loader import HTMLLoader  # type: ignore[assignment]  # noqa: F401
     __all__.append("HTMLLoader")
 except ImportError:
     pass

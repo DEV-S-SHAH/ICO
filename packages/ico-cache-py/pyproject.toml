@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ico-cache"
-version = "0.1.0"
+version = "1.0.0"
 description = "ICO-Cache: Generalized LLM Semantic Cache"
 authors = [{name = "Dev"}]
 readme = "README.md"
