@@ -269,6 +269,57 @@ def eval_endpoint():
     return {"status": "eval started in background"}
 
 
+class IngestRequest(BaseModel):
+    file_path: str
+    tenant_id: Optional[str] = None
+    force_async: Optional[bool] = None
+
+
+@v1_router.post("/ingest", status_code=status.HTTP_200_OK)
+async def ingest_endpoint(
+    req: IngestRequest,
+    response: Request,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    if req.tenant_id is not None and req.tenant_id != authed_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: API key for tenant '{authed_tenant}' cannot ingest into '{req.tenant_id}'.",
+        )
+    target_tenant = req.tenant_id or authed_tenant
+
+    from ico_cache.async_ingest import job_manager
+
+    try:
+        job = job_manager.submit_ingest(
+            file_path=req.file_path,
+            tenant_id=target_tenant,
+            cache_engine=engine,
+            schema=financial_schema,
+            force_async=req.force_async,
+        )
+        return job.dict()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@v1_router.get("/ingest/jobs/{job_id}")
+def get_ingest_job_status(
+    job_id: str,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    from ico_cache.async_ingest import job_manager
+
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+    if job.tenant_id != authed_tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to job.")
+    return job.dict()
+
+
 @v1_router.get("/stats")
 def stats_endpoint():
     return {
@@ -293,6 +344,8 @@ legacy_router.add_api_route("/compare", compare_endpoint, methods=["POST"])
 legacy_router.add_api_route("/test_layer/{layer}", test_layer_endpoint, methods=["POST"])
 legacy_router.add_api_route("/clear_cache", clear_cache_endpoint, methods=["POST"])
 legacy_router.add_api_route("/invalidate", invalidate_endpoint, methods=["POST"])
+legacy_router.add_api_route("/ingest", ingest_endpoint, methods=["POST"])
+legacy_router.add_api_route("/ingest/jobs/{job_id}", get_ingest_job_status, methods=["GET"])
 legacy_router.add_api_route("/eval", eval_endpoint, methods=["POST"])
 legacy_router.add_api_route("/stats", stats_endpoint, methods=["GET"])
 app.include_router(legacy_router)

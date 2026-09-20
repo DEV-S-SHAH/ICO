@@ -39,6 +39,7 @@ _TOPIC_TOKENS: List[str] = [
 
 _TOPIC_CANONICAL: Dict[str, str] = {
     "research and development": "R&D",
+    "r&d": "R&D",
     "competitors": "competition",
     "gross margin": "margins",
     "net income": "earnings",

@@ -17,9 +17,15 @@ class StructuredLoader(BaseLoader):
     Never splits a CSV row or JSON record across chunks.
     """
 
-    def __init__(self, query: Optional[str] = None, schema: Optional[MetadataSchema] = None):
+    def __init__(
+        self,
+        query: Optional[str] = None,
+        schema: Optional[MetadataSchema] = None,
+        rows_per_chunk: Optional[int] = None,
+    ):
         self.query = query
         self.schema = schema
+        self.rows_per_chunk = rows_per_chunk
 
     def load(self, source: str, schema: Optional[MetadataSchema] = None) -> List[Chunk]:
         effective_schema = schema or self.schema
@@ -33,7 +39,6 @@ class StructuredLoader(BaseLoader):
             elif ext in [".db", ".sqlite", ".sqlite3"] or self.query:
                 return self._load_sql(source, self.query, effective_schema)
             else:
-                # Try parsing as raw JSON string
                 try:
                     data = json.loads(source)
                     return self._parse_json_data(data, source_file="raw_json", schema=effective_schema)
@@ -50,7 +55,15 @@ class StructuredLoader(BaseLoader):
             if os.path.getsize(file_path) == 0:
                 return []
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                reader = csv.DictReader(f)
+                reader = list(csv.DictReader(f))
+
+            total_rows = len(reader)
+            if total_rows == 0:
+                return []
+
+            batch_size = self.rows_per_chunk or (50 if total_rows > 100 else 1)
+
+            if batch_size <= 1:
                 for idx, row in enumerate(reader):
                     lines = [f"{k}: {v}" for k, v in row.items() if v is not None]
                     text = "\n".join(lines)
@@ -68,6 +81,38 @@ class StructuredLoader(BaseLoader):
                             metadata=meta,
                         )
                     )
+            else:
+                chunk_idx = 0
+                for start_idx in range(0, total_rows, batch_size):
+                    end_idx = min(start_idx + batch_size, total_rows)
+                    batch = reader[start_idx:end_idx]
+
+                    row_blocks = []
+                    for r_i, row in enumerate(batch, start=start_idx + 1):
+                        lines = [f"{k}: {v}" for k, v in row.items() if v is not None]
+                        row_blocks.append(f"--- Row {r_i} ---\n" + "\n".join(lines))
+
+                    text = "\n\n".join(row_blocks)
+                    meta = {
+                        "source_file": file_path,
+                        "start_row": start_idx + 1,
+                        "end_row": end_idx,
+                        "row_count": len(batch),
+                    }
+                    if schema:
+                        extracted = schema.extract(text)
+                        meta.update({k: v for k, v in extracted.items() if v is not None})
+
+                    chunks.append(
+                        Chunk(
+                            text=text,
+                            source_file=file_path,
+                            page_or_section=f"Rows {start_idx + 1}-{end_idx}",
+                            chunk_index=chunk_idx,
+                            metadata=meta,
+                        )
+                    )
+                    chunk_idx += 1
         except Exception as e:
             logger.warning(f"Failed to parse CSV file {file_path}: {e}")
             return []

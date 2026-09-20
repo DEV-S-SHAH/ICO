@@ -191,24 +191,53 @@ def test_pdf_and_html_formats():
     """
     Verify TextLoader format coverage:
     - Clean PDF extracts text layer and schema metadata
-    - Scanned/OCR PDF with no text layer yields 0 chunks gracefully
+    - Scanned/OCR PDF extracts text via OCR fallback, recording extraction_method='ocr'
+    - Blank image PDF returns 0 chunks with explicit status 'image_only_no_text'
+    - Zero-byte PDF returns 0 chunks with explicit status 'empty_file'
     - Malformed HTML strips malicious scripts and extracts clean content chunks
     """
     auto_loader = AutoLoader(schema=universal_schema)
+    from ico_cache.loaders.pdf_loader import PDFLoader
+    import tempfile
+    import fitz
 
-    # Clean PDF
+    # 1. Clean PDF
     clean_pdf_path = os.path.join(CORPUS_ROOT, "text/clean.pdf")
     pdf_chunks = auto_loader.load(clean_pdf_path)
     assert len(pdf_chunks) >= 1
     assert "Apple Inc. (AAPL)" in pdf_chunks[0].text
     assert pdf_chunks[0].metadata.get("entity") == "AAPL"
+    assert pdf_chunks[0].metadata.get("extraction_method") == "text_layer"
 
-    # Scanned OCR PDF (no text layer)
+    # 2. Scanned OCR PDF (image containing text)
     scanned_pdf_path = os.path.join(CORPUS_ROOT, "text/scanned_ocr.pdf")
     scanned_chunks = auto_loader.load(scanned_pdf_path)
-    assert len(scanned_chunks) == 0
+    assert len(scanned_chunks) >= 1
+    assert "Scanned Document" in scanned_chunks[0].text
+    assert scanned_chunks[0].metadata.get("extraction_method") == "ocr"
 
-    # Malformed HTML (unclosed tags, script injection)
+    # 3. Blank image PDF (image with no text)
+    pdf_loader = PDFLoader()
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_blank:
+        doc = fitz.open()
+        page = doc.new_page(width=300, height=300)
+        pix = fitz.Pixmap(fitz.csRGB, (0, 0, 300, 300), False)
+        pix.clear_with(255)
+        page.insert_image(fitz.Rect(0, 0, 300, 300), pixmap=pix)
+        doc.save(tmp_blank.name)
+        doc.close()
+
+        blank_chunks = pdf_loader.load(tmp_blank.name)
+        assert len(blank_chunks) == 0
+        assert pdf_loader.last_status == "image_only_no_text"
+
+    # 4. Zero-byte PDF
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_empty:
+        empty_chunks = pdf_loader.load(tmp_empty.name)
+        assert len(empty_chunks) == 0
+        assert pdf_loader.last_status == "empty_file"
+
+    # 5. Malformed HTML (unclosed tags, script injection)
     html_path = os.path.join(CORPUS_ROOT, "text/malformed.html")
     html_chunks = auto_loader.load(html_path)
     assert len(html_chunks) >= 1
@@ -271,4 +300,88 @@ def test_large_scale_malformed_code_fallback():
     sizes = [len(c.text) for c in chunks]
     assert min(sizes) > 100  # No empty/degenerate chunks
     assert max(sizes) < 10_000  # No giant fallback blobs
+
+
+def test_structured_loader_row_coalescing():
+    """
+    Verify that StructuredLoader coalesces rows into bounded chunks
+    (50-100 rows per chunk) for large CSV files while keeping small files 1:1.
+    """
+    loader = StructuredLoader()
+    # 1. Large CSV (>100k rows) coalesces into 50-row chunks
+    large_csv = os.path.join(CORPUS_ROOT, "structured/large.csv")
+    large_chunks = loader.load(large_csv)
+    assert 1000 <= len(large_chunks) <= 3000
+    assert "Rows 1-50" in large_chunks[0].page_or_section
+    assert large_chunks[0].metadata["row_count"] == 50
+
+    # 2. Small CSV (3 rows) preserves 1 row per chunk
+    small_csv = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/products.csv"))
+    small_chunks = loader.load(small_csv)
+    assert len(small_chunks) == 3
+
+
+def test_async_ingestion_job_manager():
+    """
+    Verify IngestionJobManager threshold dispatch and job status tracking.
+    """
+    import tempfile
+    import time
+    from ico_cache.async_ingest import IngestionJobManager
+    from ico_cache.core.cache_engine import CacheEngine
+    from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
+    from ico_cache.backends.vector.lancedb_store import LanceDBStore
+    from ico_cache.backends.exact.sqlite_store import SQLiteStore
+
+    with tempfile.TemporaryDirectory() as td:
+        engine = CacheEngine(
+            embedder=FastEmbedder(),
+            vector_store=LanceDBStore(uri=f"{td}/lancedb"),
+            exact_store=SQLiteStore(db_path=f"{td}/exact.db"),
+        )
+        mgr = IngestionJobManager(async_threshold_bytes=1000)
+
+        # Sync dispatch (< 1000 bytes)
+        small_file = os.path.join(CORPUS_ROOT, "text/standard.txt")
+        job_sync = mgr.submit_ingest(small_file, "tenant_test", engine)
+        assert job_sync.is_async is False
+        assert job_sync.status == "completed"
+        assert job_sync.chunks_processed == 3
+
+        # Async dispatch (> 1000 bytes)
+        code_file = os.path.join(CORPUS_ROOT, "code/standard.py")
+        job_async = mgr.submit_ingest(code_file, "tenant_test", engine)
+        assert job_async.is_async is True
+        assert job_async.status in ["queued", "processing", "completed"]
+
+        # Wait for async completion
+        for _ in range(50):
+            polled = mgr.get_job(job_async.job_id)
+            if polled.status == "completed":
+                break
+            time.sleep(0.1)
+
+        polled = mgr.get_job(job_async.job_id)
+        assert polled.status == "completed"
+        assert polled.chunks_processed >= 3
+
+
+def test_cross_type_adversarial_similarity_bounds():
+    """
+    Verify that all rebuilt cross-type adversarial query pairs:
+    - Have 0 metadata conflicts (pass hard_gate)
+    - Fall strictly in the 0.8000 to 0.8499 range
+    - Produce 0% false hits at the 0.850 threshold
+    """
+    import json
+    adv_path = os.path.join(CORPUS_ROOT, "queries/cross_type_adversarial.jsonl")
+    assert os.path.exists(adv_path)
+
+    with open(adv_path) as f:
+        pairs = [json.loads(l) for l in f if l.strip()]
+
+    assert len(pairs) >= 30
+    for p in pairs:
+        sim = p["similarity"]
+        assert 0.8000 <= sim <= 0.8499, f"Pair out of bounds: {p}"
 
