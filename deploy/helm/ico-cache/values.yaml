@@ -1,0 +1,112 @@
+# Default values for ico-cache.
+# This is a YAML-formatted file.
+
+# Multi-Tenant Configuration
+tenants:
+  isolation_mode: "collection" # "collection" or "payload"
+  list:
+    - id: "default"
+      api_key: "dev-key-default"
+    - id: "tenant_a"
+      api_key: "key-tenant-a"
+    - id: "tenant_b"
+      api_key: "key-tenant-b"
+
+# Global Environment / Common
+env:
+  ENVIRONMENT: "production"
+  API_HOST: "0.0.0.0"
+  API_PORT: 8000
+  OLLAMA_HOST: "http://ollama:11434"
+  OLLAMA_MODEL: "qwen2.5:3b"
+  LANGFUSE_HOST: "http://langfuse:3000"
+
+# FastAPI Service Deployment
+api:
+  replicaCount: 2
+  image:
+    repository: "ico-cache-api"
+    pullPolicy: "IfNotPresent"
+    tag: "latest"
+  service:
+    type: ClusterIP
+    port: 8000
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+# Invalidation Worker Deployment (Redis Streams consumer)
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "ico-cache-api"
+    pullPolicy: "IfNotPresent"
+    tag: "latest"
+  command: ["python3", "-m", "ico_cache.invalidation"]
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+
+# Redis Cache Backend
+redis:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "redis"
+    tag: "7.2-alpine"
+    pullPolicy: "IfNotPresent"
+  service:
+    port: 6379
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+  auth:
+    existingSecret: ""
+    passwordKey: "redis-password"
+    password: "myredissecret"
+
+# Qdrant Vector DB Backend
+qdrant:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "qdrant/qdrant"
+    tag: "v1.9.0"
+    pullPolicy: "IfNotPresent"
+  service:
+    httpPort: 6333
+    grpcPort: 6334
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+# Secrets references
+secrets:
+  existingSecret: ""
+  redisPassword: "myredissecret"
+  qdrantApiKey: ""
+  langfusePublicKey: ""
+  langfuseSecretKey: ""

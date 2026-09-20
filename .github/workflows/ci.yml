@@ -64,3 +64,22 @@ jobs:
           cd packages/ico-cache-js
           npm ci || npm install
           npm run build
+
+  helm-lint-and-template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Lint Helm Chart
+        run: |
+          helm lint deploy/helm/ico-cache
+
+      - name: Template Helm Chart (Dry-run)
+        run: |
+          helm template ico-cache deploy/helm/ico-cache --debug
+

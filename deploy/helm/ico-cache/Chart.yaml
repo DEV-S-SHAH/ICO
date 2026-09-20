@@ -1,0 +1,8 @@
+apiVersion: v2
+name: ico-cache
+description: Helm chart for ICO-Cache generalized multi-tenant LLM semantic cache
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: Dev
