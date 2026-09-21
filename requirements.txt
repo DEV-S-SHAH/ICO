@@ -1,21 +1,16 @@
-# Caching Middleware Core
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-numpy>=1.24.0
-python-dotenv>=1.0.0
-tenacity>=8.2.0
+# Official PyPI Caching & Ingestion Package
+ico-cache>=1.0.3
 
-# RAG, LLM & Orchestration
+# RAG & Orchestration
 langgraph>=0.2.0
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-core>=0.3.0
 google-generativeai>=0.8.0
-faiss-cpu>=1.8.0
-sentence-transformers>=3.0.0
 
-# Document Processing & Evaluation
-pypdf>=3.0.0
+# Evaluation & Metrics
 rouge-score>=0.1.2
 bert-score>=0.3.13
 pandas>=2.0.0
+numpy>=1.24.0
+pypdf>=3.0.0

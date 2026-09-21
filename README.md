@@ -1,38 +1,35 @@
-# ⚡ LangGraph RAG with Intelligent Cache & Google Gemini
+# ⚡ LangGraph RAG with `ico-cache` & Google Gemini
 
-A simple, fast, and smart RAG (Retrieval-Augmented Generation) application built using **LangGraph**, **Google Gemini**, and the **`intelligent-cache`** library.
+A simple, fast, and smart RAG (Retrieval-Augmented Generation) application built using **LangGraph**, **Google Gemini**, and the official **[`ico-cache`](https://pypi.org/project/ico-cache/)** library from PyPI.
 
 ---
 
 ## 💡 What is this project?
 
 When building AI applications with RAG:
-1. **Without Cache:** Every time a user asks a question, your app calls Google Gemini API. This is slow (takes 2 to 6 seconds) and costs money for every token.
-2. **With Cache (`intelligent-cache`):** If someone asks the same question—or even a *similar question in different words*—the answer comes directly from memory in **less than 3 milliseconds** at **$0.00 cost**.
+1. **Without Cache:** Every time a user asks a question, your app calls Google Gemini API. This is slow (takes 2 to 6 seconds), hits rate limits, and costs money for every token.
+2. **With Cache (`ico-cache`):** If someone asks the same question—or even a *similar question in different words*—the answer is served directly from memory in **less than 3 milliseconds** at **$0.00 cost**.
 
 ---
 
-## 📦 How to Install the Cache Library
+## 📦 How to Install `ico-cache` from PyPI
 
-The library **`intelligent-cache`** is included directly inside this repository.
+The library is published on PyPI at **[pypi.org/project/ico-cache](https://pypi.org/project/ico-cache/)**.
 
-To install it so Python can use it anywhere in your terminal:
+To install everything with one simple command:
 
 ```bash
-# Step 1: Create and activate a clean Python environment
+# 1. Create and activate a clean Python 3.11 environment
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-# Step 2: Install required packages (LangGraph, Google Gemini, etc.)
+# 2. Install all requirements (includes ico-cache from PyPI)
 pip install -r requirements.txt
-
-# Step 3: INSTALL THE CACHE LIBRARY ITSELF
-pip install -e .
 ```
 
-> **What does `pip install -e .` do?**  
-> It reads `pyproject.toml` in this folder and installs `intelligent-cache` into your Python environment. Once installed, you can import it in any script using:  
-> `from intelligent_cache import IntelligentCache`
+> **Direct pip command:**  
+> You can also install the cache library directly anytime via:  
+> `pip install ico-cache`
 
 ---
 
@@ -44,13 +41,13 @@ export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
 ### Step 2: Download the Dataset (PDF & Text)
-This downloads the official *Attention Is All You Need* PDF paper and AI knowledge articles from the web:
+Uses `ico-cache`'s built-in **`AutoLoader`** to parse the official *Attention Is All You Need* PDF paper and AI technical articles:
 ```bash
 python src/download_data.py
 ```
 
 ### Step 3: Run the Benchmark (See With vs Without Cache)
-This runs 50 realistic queries, compares the responses, and saves the results to a CSV and JSON file:
+Runs 50 realistic queries, compares the responses, and saves the results to CSV and JSON:
 ```bash
 python benchmark.py
 ```
@@ -59,9 +56,9 @@ python benchmark.py
 
 ## 🔍 How Does "With Cache" vs "Without Cache" Actually Work?
 
-Here is the exact difference in simple code:
+Here is the exact difference in simple, plain code:
 
-### ❌ 1. Without Cache (Direct API Call)
+### ❌ 1. Without Cache (Calls Gemini API Every Time)
 ```python
 # Every single query makes a network call to Google Gemini
 response = gemini_model.generate_content(prompt)
@@ -72,7 +69,7 @@ response = gemini_model.generate_content(prompt)
 # ⚠️ Risk: Hits Google API rate limits quickly
 ```
 
-### ✅ 2. With Cache (`intelligent-cache`)
+### ✅ 2. With Cache (`ico-cache`)
 ```python
 from intelligent_cache import IntelligentCache
 
@@ -120,7 +117,7 @@ After running `python benchmark.py`, all 50 query questions and answers are save
 ---
 
 ## 🧪 Optional: How to Evaluate Response Quality
-To verify that cached answers have the same high quality and accuracy as fresh Gemini answers:
+To verify that cached answers have the same high accuracy as fresh Gemini answers:
 ```bash
 python evaluate.py
 ```

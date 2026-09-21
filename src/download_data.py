@@ -1,4 +1,4 @@
-"""Multi-format Dataset Downloader & Parser (PDF, TXT, JSON)."""
+"""Multi-format Dataset Downloader & Parser powered by PyPI's ico-cache AutoLoader."""
 
 import io
 import json
@@ -6,7 +6,13 @@ import logging
 import os
 import urllib.request
 from typing import Dict, List
-import pypdf
+
+try:
+    from ico_cache import AutoLoader
+    HAS_ICO_CACHE = True
+except ImportError:
+    HAS_ICO_CACHE = False
+    import pypdf
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +38,6 @@ TXT_WIKI_TOPICS = [
 ]
 
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
-    """Break large text into overlapping windows."""
-    words = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk_words = words[i : i + chunk_size]
-        chunks.append(" ".join(chunk_words))
-        if i + chunk_size >= len(words):
-            break
-        i += chunk_size - overlap
-    return chunks
-
-
 def download_and_prepare_dataset(output_dir: str = "data/complex_dataset") -> List[Dict[str, str]]:
     """Download PDF research papers and TXT articles, parse chunks, and compile corpus."""
     os.makedirs(output_dir, exist_ok=True)
@@ -56,8 +48,8 @@ def download_and_prepare_dataset(output_dir: str = "data/complex_dataset") -> Li
 
     chunks = []
 
-    # 1. Download & Parse PDF
-    print("\n--- 1. Downloading & Parsing Complex PDF Documents ---")
+    # 1. Download & Parse PDF using ico-cache AutoLoader
+    print("\n--- 1. Downloading & Parsing Complex PDF Documents (via ico-cache) ---")
     for item in PDF_SOURCES:
         pdf_path = os.path.join(pdf_dir, f"{item['id']}.pdf")
         if not os.path.exists(pdf_path):
@@ -70,23 +62,32 @@ def download_and_prepare_dataset(output_dir: str = "data/complex_dataset") -> Li
         else:
             print(f"Using cached PDF file: {pdf_path}")
 
-        reader = pypdf.PdfReader(pdf_path)
-        total_pages = min(len(reader.pages), item.get("max_pages", 5))
-        for page_idx in range(total_pages):
-            page_text = reader.pages[page_idx].extract_text() or ""
-            page_chunks = chunk_text(page_text, chunk_size=300, overlap=50)
-            for c_idx, c in enumerate(page_chunks):
+        if HAS_ICO_CACHE:
+            auto_loader = AutoLoader()
+            parsed_chunks = auto_loader.load(pdf_path)
+            for idx, c in enumerate(parsed_chunks[:item.get("max_pages", 5)]):
                 chunk = {
-                    "doc_id": f"{item['id']}_p{page_idx + 1}_{c_idx + 1}",
+                    "doc_id": f"{item['id']}_p{idx + 1}",
                     "source_type": "pdf",
-                    "title": f"{item['title']} (Page {page_idx + 1}, Section {c_idx + 1})",
-                    "content": c,
+                    "title": f"{item['title']} (Page {idx + 1})",
+                    "content": c.text.strip(),
+                }
+                chunks.append(chunk)
+        else:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            for idx in range(min(len(reader.pages), item.get("max_pages", 5))):
+                chunk = {
+                    "doc_id": f"{item['id']}_p{idx + 1}",
+                    "source_type": "pdf",
+                    "title": f"{item['title']} (Page {idx + 1})",
+                    "content": reader.pages[idx].extract_text() or "",
                 }
                 chunks.append(chunk)
 
     print(f"Extracted {len(chunks)} text chunks from PDF documents.")
 
-    # 2. Download & Parse TXT
+    # 2. Download & Parse TXT using ico-cache AutoLoader
     print("\n--- 2. Downloading & Parsing In-Depth TXT Documents ---")
     for topic in TXT_WIKI_TOPICS:
         txt_path = os.path.join(txt_dir, f"{topic}.txt")
@@ -100,11 +101,18 @@ def download_and_prepare_dataset(output_dir: str = "data/complex_dataset") -> Li
                 with open(txt_path, "w", encoding="utf-8") as f:
                     f.write(extract)
 
+                if HAS_ICO_CACHE:
+                    auto_loader = AutoLoader()
+                    txt_chunks = auto_loader.load(txt_path)
+                    content = txt_chunks[0].text if txt_chunks else extract
+                else:
+                    content = extract
+
                 chunk = {
                     "doc_id": f"wiki_{topic}",
                     "source_type": "txt",
                     "title": title,
-                    "content": extract,
+                    "content": content,
                 }
                 chunks.append(chunk)
                 print(f"Saved TXT: {title} ({len(extract)} chars)")
