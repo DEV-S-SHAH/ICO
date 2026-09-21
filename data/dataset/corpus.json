@@ -1,0 +1,32 @@
+[
+  {
+    "id": "Artificial_intelligence",
+    "title": "Artificial intelligence",
+    "content": "Artificial intelligence (AI) is the capability of computational systems to perform tasks typically associated with human intelligence, such as learning, reasoning, problem-solving, perception, and decision-making. It is a field of research in engineering, mathematics, and computer science that develops and studies methods and software that enable machines to perceive their environment and use learning and intelligence to take actions that maximise their chances of achieving defined goals.",
+    "url": "https://en.wikipedia.org/wiki/Artificial_intelligence"
+  },
+  {
+    "id": "Machine_learning",
+    "title": "Machine learning",
+    "content": "Machine learning (ML) is a field of study in artificial intelligence concerned with the development and study of statistical algorithms that can learn from data and generalize to unseen data, and thus perform tasks without being explicitly programmed.",
+    "url": "https://en.wikipedia.org/wiki/Machine_learning"
+  },
+  {
+    "id": "Large_language_model",
+    "title": "Large language model",
+    "content": "A large language model (LLM) is an AI model trained on a vast amount of text for natural language processing tasks, especially language generation. LLMs can typically generate, summarize, translate, and analyze text in many contexts. They are the basis for many modern chatbots, such as ChatGPT, Claude, Gemini, Grok, and DeepSeek.",
+    "url": "https://en.wikipedia.org/wiki/Large_language_model"
+  },
+  {
+    "id": "Retrieval-augmented_generation",
+    "title": "Retrieval-augmented generation",
+    "content": "Retrieval-augmented generation (RAG) is a technique that enables large language models (LLMs) to retrieve and incorporate new information from external data sources. With RAG, LLMs first refer to a specified set of documents, then respond to user queries. These documents supplement information from the LLM's pre-existing training data. This allows LLMs to use domain-specific and/or updated information that is not available in the training data. For example, this enables LLM-based chatbots to access internal company data or generate responses based on authoritative sources. The technique was first proposed in 2020 and has since become a widely adopted approach in modern AI systems.",
+    "url": "https://en.wikipedia.org/wiki/Retrieval-augmented_generation"
+  },
+  {
+    "id": "Quantum_computing",
+    "title": "Quantum computing",
+    "content": "A quantum computer is a computer that represents and processes information using quantum states. Quantum computations exploit phenomena such as superposition, interference, and entanglement. Quantum computers have the potential to complete some calculations exponentially faster than classical computers. For example, a large-scale quantum computer could break widely used encryption schemes and aid physicists in performing physical simulations. However, current hardware implementations of quantum computation are largely experimental and suitable for only certain specialized tasks.",
+    "url": "https://en.wikipedia.org/wiki/Quantum_computing"
+  }
+]

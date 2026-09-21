@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intelligent-cache"
+version = "1.0.0"
+description = "Production-ready, model-agnostic intelligent cache optimization library for AI agents and LLMs"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Dev Shah", email = "dev@example.com"}
+]
+keywords = [
+    "llm",
+    "cache",
+    "semantic-cache",
+    "ai-agent",
+    "openai",
+    "anthropic",
+    "gemini",
+    "langchain",
+    "vector-search",
+    "optimization"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+redis = [
+    "redis>=4.5.0",
+]
+postgres = [
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pgvector>=0.2.0",
+]
+sentence-transformers = [
+    "sentence-transformers>=2.2.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.18.0",
+]
+gemini = [
+    "google-generativeai>=0.4.0",
+]
+langchain = [
+    "langchain-core>=0.1.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+]
+all = [
+    "redis>=4.5.0",
+    "sqlalchemy>=2.0.0",
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
+    "google-generativeai>=0.4.0",
+    "langchain-core>=0.1.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/DEV-S-SHAH/intelligent-cache-optimization"
+Documentation = "https://github.com/DEV-S-SHAH/intelligent-cache-optimization#readme"
+Repository = "https://github.com/DEV-S-SHAH/intelligent-cache-optimization"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["intelligent_cache*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
