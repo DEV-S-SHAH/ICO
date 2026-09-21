@@ -66,18 +66,24 @@ User Query
 
 ## ⚡ Quickstart
 
-### 1. Setup Environment
+### 1. Setup Environment & Install `intelligent-cache`
+The caching middleware is packaged directly in this repo via `pyproject.toml`. Install the project dependencies and the `intelligent-cache` library in editable mode (`-e`):
+
 ```bash
-# Create and activate Python 3.11 virtual environment
+# 1. Create and activate Python 3.11 virtual environment
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
+# 2. Install all RAG, LangGraph & evaluation dependencies
 pip install -r requirements.txt
+
+# 3. Install the `intelligent-cache` library from the root directory
 pip install -e .
 ```
 
-### 2. Configure API Key
+> **Note on Library Installation:** Running `pip install -e .` installs the `intelligent_cache` Python package directly into your virtual environment from the root of this repository. This allows `benchmark.py`, `src/graph.py`, and `evaluate.py` to seamlessly import `from intelligent_cache import IntelligentCache` and `@cache`.
+
+### 2. Configure Gemini API Key
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key"
 ```
