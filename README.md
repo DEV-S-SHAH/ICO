@@ -1,98 +1,72 @@
 # ICO-Cache: Semantic Caching Middleware for LLM Applications
 
-[![CI](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml/badge.svg)](https://github.com/DEV-S-SHAH/ICO/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml/badge.svg)](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ico-cache.svg)](https://pypi.org/project/ico-cache/)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI](https://img.shields.io/badge/pypi-ico--cache-blue.svg)](https://pypi.org/project/ico-cache/)
-[![npm](https://img.shields.io/badge/npm-ico--cache--js-red.svg)](https://www.npmjs.com/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://pypi.org/project/ico-cache/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-ICO-Cache is a Python library — an application layer between any LLM-powered system and the model itself — that caches LLM responses so repeated or reformulated prompts are never re-run through the model. It ships as a pip package (`ico-cache`) and an npm SDK (`ico-cache-js`), and uses three complementary caching techniques — **exact (L1)**, **semantic (L2)**, and **context-aware (L3)** — to answer identical, paraphrased, and context-dependent queries without a fresh LLM generation.
+ICO-Cache is a high-performance, cross-platform semantic caching middleware designed for **LLM applications, coding agents, and RAG pipelines**. It sits directly between your application and model APIs, caching responses so repeated or semantically equivalent queries never re-run through the LLM.
 
-By sitting in front of the model — whether used by a coding agent, a RAG pipeline, or any other LLM-based application — ICO-Cache first reduces **API token cost** (fewer calls to the LLM), then **latency** (a cache hit returns in milliseconds instead of seconds), while keeping the cache's own read/write overhead minimal.
-
-It ships with a **universal ingestion layer**: CSV, TXT, JSON/JSONL, HTML, PDF (text-layer and scanned/OCR), OpenDocument (ODT/ODS), Microsoft Office (DOCX/XLSX/PPTX), images, and source code are all auto-detected **by content, not file extension** — so you can feed it any document and it just works. **No datasets are bundled**; you bring your own documents.
-
-> **See it in action:** `apps/financial-rag-demo` is a *reference implementation* that runs ico-cache end-to-end against SEC filings (FastAPI + Streamlit). It exists to showcase the library — it is a demo, not the product.
-
-Read the [Detailed Cache Architecture & Layer Design Guide](docs/ARCHITECTURE.md).
+It is available as both a Python library ([`ico-cache`](https://pypi.org/project/ico-cache/)) and a TypeScript/JavaScript SDK (`ico-cache-js`).
 
 ---
 
-## Features
+## Why ICO-Cache?
 
-- **3-tier cache** — L1 exact (Redis/SQLite), L2 semantic (Qdrant/LanceDB), L3 dual-context (multi-vector) with an adaptive threshold.
-- **Blast-radius safety** — `hard_gate` metadata guard guarantees zero cross-entity / cross-quarter / cross-topic false hits.
-- **Multi-tenant** — collection or payload isolation; authenticated per-tenant API keys (timing-safe).
-- **Universal ingestion** — content-sniffing loaders + OCR fallback for any document, no matter the extension.
-- **Single-flight dedup** — 20+ concurrent identical queries trigger exactly one LLM generation.
-- **Observable** — Prometheus `/metrics`, OTLP/Langfuse tracing, structured JSON logs, `/v1/ready` (fails closed when a dependency is down).
-- **Distributed by default** — Redis Streams invalidation worker, cluster-wide rate limiting.
-- **Kubernetes-native** — hardened Helm chart (StatefulSets + PVCs, security contexts, external Secrets, image digests, PDBs).
-- **Zero-infra dev mode** — LanceDB + SQLite + FastEmbed run entirely embedded.
+| Metric | Without Cache | With ICO-Cache |
+| :--- | :--- | :--- |
+| **API Token Cost** | 100% cost on every repeated/reworded prompt | **Drastically reduced** via L1 exact & L2/L3 semantic hits |
+| **Response Latency** | Seconds (2,000ms – 10,000ms+) | **Sub-millisecond** (L1) or **15–30ms** (L2/L3) |
+| **False-Hit Rate** | Prone to false positives in naïve vector caches | **0.00% false-hit baseline** enforced by `hard_gate` metadata validation |
+| **Cross-Platform** | Fragile file locking / signal handling | **Fully supported** across Linux, Windows, and macOS |
+
+> **Reference Demo:** `apps/financial-rag-demo` provides a reference implementation running against SEC filings with FastAPI + Streamlit to illustrate real-world usage.
+
+For an exhaustive architectural deep-dive, see the [Architecture Documentation](docs/ARCHITECTURE.md).
 
 ---
 
-## Repository Structure
+## Core Capabilities
 
-```text
-.
-├── packages/
-│   ├── ico-cache-py/              # Core Python library (pip package: ico-cache)
-│   │   ├── pyproject.toml
-│   │   ├── src/ico_cache/         # Engine, backends, universal loaders, telemetry
-│   │   │   ├── core/              # CacheEngine (L1/L2/L3), metadata guard
-│   │   │   ├── backends/          # vector (Qdrant/LanceDB), exact (Redis/SQLite), embedding
-│   │   │   ├── loaders/           # universal content-based loaders + OCR
-│   │   │   └── telemetry/         # Prometheus metrics, structlog, OTel/Langfuse
-│   │   └── tests/                 # Dataset-free self-contained verification suite
-│   └── ico-cache-js/              # TypeScript / JavaScript client SDK (npm: ico-cache-js)
-├── apps/
-│   └── financial-rag-demo/        # Financial RAG demo application
-│       ├── api/                   # Hardened FastAPI service (/v1/*, rate limiting, health, metrics)
-│       ├── ui/                    # Streamlit interactive query interface
-│       └── docker/                # docker-compose.yml and container definitions
-├── examples/
-│   ├── financial_schema.py        # SEC-filing metadata schema
-│   ├── universal_schema.py        # Cross-format metadata schema
-│   ├── ingest_*.py                # Non-financial ingest entry points (code / documents / structured)
-│   └── sec-filings-corpus/        # SEC EDGAR fetching/cleanup scripts (no data committed)
-├── deploy/helm/ico-cache/         # Hardened installable Helm chart
-├── docs/ARCHITECTURE.md           # In-depth architectural documentation
-├── .env.example                   # Environment configuration template
-├── eval_harness.py                # 0% false-hit evaluation harness (self-generating)
-└── CHANGELOG.md                   # Version release notes
-```
+- **3-Tier Semantic Hierarchy**:
+  - **L1 (Exact)**: Sub-millisecond direct key lookup (Redis / SQLite) with metadata fingerprinting.
+  - **L2 (Semantic)**: Vector cosine similarity matching for rephrased queries (Qdrant / LanceDB).
+  - **L3 (Context-Aware)**: Multi-vector representation accounting for session and dialogue context.
+- **Blast-Radius Guardrails**: Strict `hard_gate` schema checks prevent cross-entity, cross-quarter, or cross-tenant cache bleed.
+- **Single-Flight Coalescing**: Concurrent identical cache misses collapse into a single LLM request.
+- **Universal Ingestion**: Content-sniffed loaders (PDF, Office DOCX/XLSX/PPTX, ODF ODT/ODS, TXT, CSV, JSON/JSONL, HTML, Code AST, Images with OCR).
+- **Multi-Tenancy**: Isolated partitions via dedicated collections or timing-safe authenticated payload filters.
+- **Production Observability**: Built-in Prometheus metrics (`/metrics`), OpenTelemetry tracing, structured JSON logs, and `/v1/ready` health probes.
+- **Zero-Infra Mode**: Runs out of the box with embedded SQLite + LanceDB + FastEmbed without Docker dependencies.
 
 ---
 
 ## Installation
 
-Requires **Python 3.11+**.
+Requires **Python 3.11+**. Fully compatible with Linux, Windows, and macOS.
 
 ```bash
-# From PyPI (once published)
+# Core package from PyPI
 pip install ico-cache
 
-# Or direct from GitHub
-pip install "git+https://github.com/DEV-S-SHAH/ICO.git#subdirectory=packages/ico-cache-py"
-
-# Extras
-pip install "ico-cache[loaders,observability]"   # full document loaders + tracing
+# With document loaders (PDF, OCR, Office, AST parsers) and tracing
+pip install "ico-cache[loaders,observability]"
 ```
 
-### TypeScript / JavaScript SDK (NPM)
+### TypeScript / JavaScript SDK
 
 ```bash
 cd packages/ico-cache-js
 npm install
-npm run build   # requires Node.js >= 20
+npm run build
 ```
 
 ---
 
 ## Quickstart: Zero-Infra Embedded Mode
 
-Run ICO-Cache with **zero external services or Docker containers** — LanceDB for embedded vectors, SQLite for exact keys, FastEmbed for local ONNX embeddings:
+Run an entire semantic cache locally without starting Redis or Qdrant:
 
 ```python
 import asyncio
@@ -114,14 +88,15 @@ async def main():
     result = await engine.resolve(query)
 
     if result["source"] == "MISS":
-        print("Cache MISS. Generating fresh response...")
-        answer = {"text": "It returns the user record matching id, or None when the user does not exist."}
+        print("Cache MISS. Calling model...")
+        answer = {"text": "It returns the user record matching id, or None if not found."}
         engine.set_l1(query, answer)
         await engine.async_write_l2(query, answer)
     else:
         print(f"Cache HIT via {result['source']}: {result['response']}")
 
-    paraphrased = "what does fetch_user return for an unknown id?"
+    # Paraphrased query hits L2 semantic cache
+    paraphrased = "what is the return value of fetch_user with an id?"
     hit = await engine.resolve(paraphrased)
     print(f"Paraphrased query hit: {hit['source']} -> {hit['response']}")
 
@@ -129,23 +104,33 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-### Universal Ingestion
+---
 
-Feed **any** document — CSV, TXT, JSONL, HTML, PDF (incl. scanned), ODT/ODS, DOCX/XLSX/PPTX, PNG/JPG/TIFF, or source code — through the same AutoLoader. Format detection is content-based and OCR kicks in when a page is an image:
+## Universal Document Ingestion
+
+ICO-Cache sniffs content headers directly (extension-agnostic) with automatic OCR fallback for scanned pages and images:
 
 ```python
-from ico_cache.loaders import AutoLoader, ingest, configure_ocr
+from ico_cache.loaders import AutoLoader, configure_ocr
 from examples.universal_schema import universal_schema
 
-configure_ocr(enabled=True, languages="eng")        # optional tuning
-chunks = AutoLoader(schema=universal_schema).load("annual_report.pdf")
+# Optional OCR configuration
+configure_ocr(enabled=True, languages="eng")
+
+loader = AutoLoader(schema=universal_schema)
+chunks = loader.load("quarterly_report.pdf")
+
 for chunk in chunks:
-    print(chunk.text, chunk.metadata)
+    print(f"[{chunk.page_or_section}] {chunk.text[:100]}... (Metadata: {chunk.metadata})")
 ```
 
 ---
 
-## Distributed Server Mode (Docker Stack)
+## Distributed Production Deployment
+
+### Docker Compose Stack
+
+Launch the production API, Streamlit UI, Qdrant, and Redis:
 
 ```bash
 cp .env.example .env
@@ -153,96 +138,66 @@ cd apps/financial-rag-demo/docker
 docker compose up -d
 ```
 
-- **API Docs**: http://localhost:8000/docs — **Health**: http://localhost:8000/v1/health
-- **Readiness**: http://localhost:8000/v1/ready (503 when a backend is down) — **Metrics**: http://localhost:8000/v1/metrics
-- **Streamlit Demo UI**: http://localhost:8501 — **Qdrant Dashboard**: http://localhost:6333/dashboard
+- **API Documentation**: `http://localhost:8000/docs`
+- **Health / Readiness**: `http://localhost:8000/v1/health` | `http://localhost:8000/v1/ready`
+- **Prometheus Metrics**: `http://localhost:8000/v1/metrics`
+- **Interactive UI**: `http://localhost:8501`
 
-> [!WARNING]
-> The preset demo API keys (`dev-key-default`, `key-tenant-a`, `key-tenant-b`) in `.env.example` and the UI selector are **insecure local fixtures only**. Always set cryptographically secure per-tenant keys via `API_KEYS` in production.
-
-### Deploying to Kubernetes
+### Kubernetes (Helm)
 
 ```bash
 helm install ico-cache deploy/helm/ico-cache \
-  --set secrets.geminiApiKey='<key>' \
+  --set secrets.geminiApiKey='<your-key>' \
   --set externalSecrets.enabled=false
 ```
-
-The chart runs Qdrant + Redis as StatefulSets with PVCs, runs every pod non-root with read-only root filesystems, supports immutable image digests, external Secret injection (external-secrets operator), a pod disruption budget, and a real worker entrypoint (`python -m ico_cache.invalidation`) with `/healthz` probes.
-
----
-
-## Architecture Summary
-
-| Layer | Technology | Typical Latency | Purpose |
-| :--- | :--- | :--- | :--- |
-| **L1 Exact** | Redis / SQLite | `< 1ms` | Instant hits for identical repeat queries with metadata fingerprinting. |
-| **L2 Semantic** | Qdrant / LanceDB | `~15–30ms` | Matches reworded and paraphrased queries asking the same question. |
-| **L3 Dual-Context** | Qdrant / LanceDB | `~30–50ms` | Resolves multi-turn and context-dependent queries. |
-| **Guardrail** | `hard_gate` | `< 0.1ms` | Hard-blocks near-miss cross-entity / cross-quarter / cross-topic false hits. |
-
-Details on the multi-vector schema, threshold tuning, and gating rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
 ## Testing & Quality Assurance
 
-The test suite is **fully self-contained** — every fixture is generated at runtime, so there are no bundled datasets to download.
+All test fixtures are deterministically generated at runtime (**no external datasets to download**):
 
 ```bash
 # 1. Lint and type-check
-ruff check packages/ico-cache-py/src apps/financial-rag-demo
-mypy packages/ico-cache-py/src
+python -m ruff check packages/ico-cache-py/src apps/financial-rag-demo
+python -m mypy packages/ico-cache-py/src
 
-# 2. Pytest unit & layer verification
-PYTHONPATH=packages/ico-cache-py/src pytest packages/ico-cache-py/tests/
+# 2. Pytest test suite
+python -m pytest packages/ico-cache-py/tests/ -v
 
-# 3. 0% false-hit evaluation harness (self-generating synthetic data, or pass --data-dir)
-PYTHONPATH=packages/ico-cache-py/src python3 eval_harness.py
-PYTHONPATH=packages/ico-cache-py/src python3 eval_harness.py --eval-adversarial
+# 3. 0% false-hit baseline verification
+python eval_harness.py
+python eval_harness.py --eval-adversarial
 
-# 4. Dataset-driven benchmarks (5 types: paraphrase-hit, adversarial, multilingual, code-ast, lifecycle)
-PYTHONPATH=packages/ico-cache-py/src python3 benchmark.py --dataset all
+# 4. 5-Dataset benchmark harness
+python benchmark.py --dataset all
 
-# 5. Code & security audit (deps CVEs, bandit SAST, ruff/mypy, tree-sitter AST, secrets scan)
-PYTHONPATH=packages/ico-cache-py/src python3 audit.py --all
+# 5. Security and vulnerability audit
+python audit.py --all
 ```
-
-### Benchmark datasets
-
-| Dataset | What it measures | Report key |
-| --- | --- | --- |
-| `paraphrase-hit` | Efficiency: L1/L2 hit rate, latency p50/p90, throughput (QPS), LLM-avoidance | `l2_paraphrase_hit_rate`, `latency_ms`, `throughput_l1_qps` |
-| `adversarial` | Correctness: near-miss / hard-negative false hits, cross-topic + tenant-bleed prevention | `gated_by_schema`, `ungated_false_hits`, `tenant_bleed_count` |
-| `multilingual` | Embedding robustness across EN/HI/ES/JA | `per_language_l2_hit_rate` |
-| `code-ast` | tree-sitter entity extraction (py/js/go) + code-question hits | `ast_entity_counts`, `parse_success_all_languages` |
-| `lifecycle` | Freshness: stale-write suppression, invalidation, eviction hit ratio | `stale_write_suppressed`, `invalidation_cleared_l1`, `lru_eviction_hit_ratio` |
-
-Every dataset is generated deterministically at runtime — nothing is downloaded. Benchmark and audit reports are written to `benchmark-reports/` and `audit-reports/` as JSON.
-
-CI runs lint, type-check, the full suite against live Redis + Qdrant, image builds, and `helm lint`/`template`. CodeQL runs on every push/PR and weekly. The audit phases are also runnable as a pre-release gate:
-`venv/bin/python audit.py --only deps,sast`.
 
 ---
 
-## Publishing
+## Repository Layout
 
-The Python package (`ico-cache`) and JS SDK (`ico-cache-js`) are build-ready:
-
-```bash
-cd packages/ico-cache-py
-pip install build twine
-python -m build
-twine check dist/*
-
-# Publish to TestPyPI first
-twine upload --repository testpypi dist/*
-# Then to PyPI
-twine upload dist/*
+```text
+.
+├── packages/
+│   ├── ico-cache-py/          # Python library ('ico-cache' on PyPI)
+│   └── ico-cache-js/          # TypeScript SDK ('ico-cache-js')
+├── apps/
+│   └── financial-rag-demo/    # Reference FastAPI + Streamlit application
+├── deploy/helm/ico-cache/     # Production Kubernetes Helm chart
+├── examples/                  # Ingestion scripts & schema definitions
+├── docs/                      # In-depth architectural specifications
+├── benchmark.py               # 5-dataset benchmark harness
+├── audit.py                   # SAST, dependency, and AST security audit suite
+├── eval_harness.py            # False-hit gatekeeper evaluation
+└── CHANGELOG.md               # Version history and release notes
 ```
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Distributed under the [MIT License](LICENSE).
