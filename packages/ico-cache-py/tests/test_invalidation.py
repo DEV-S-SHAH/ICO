@@ -1,8 +1,12 @@
 import os
+import json
 import shutil
+import socket
 import pytest
 import importlib.util
 import sys
+import urllib.error
+import urllib.request
 from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
@@ -101,6 +105,8 @@ async def test_end_to_end_invalidation_lifecycle(temp_engine):
 
 def test_api_invalidate_endpoint():
     """Test POST /v1/invalidate endpoint via FastAPI TestClient."""
+    if not is_distributed_available():
+        pytest.skip("Distributed stack (Qdrant + Redis) is not available")
     client = TestClient(app)
     headers = {"X-API-Key": "key-tenant-a"}
 
@@ -151,6 +157,43 @@ async def test_invalidation_worker_processing(temp_engine):
 
     # Verify purged
     assert await engine.get_l1(query, tenant_id="tenant_worker_test") is None
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_worker_health_server_alive_and_stalled():
+    """Worker probe returns 200 while the loop heartbeats and 503 when stalled."""
+    import time as _time
+    from ico_cache.invalidation import _HealthServer
+
+    port = _free_port()
+    server = _HealthServer(port=port, heartbeat=lambda: _time.time())
+    server.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=3) as r:
+            assert r.status == 200
+            assert json.loads(r.read())["status"] == "ok"
+    finally:
+        server.stop()
+
+    stalled = _HealthServer(port=port, heartbeat=lambda: 0.0, max_age=0.001)
+    stalled.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=3)
+        assert exc.value.code == 503
+    finally:
+        stalled.stop()
+
+
+def test_worker_module_exposes_main_entrypoint():
+    from ico_cache.invalidation import main
+
+    assert callable(main)
 
 
 def is_distributed_available() -> bool:

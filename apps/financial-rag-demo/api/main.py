@@ -1,10 +1,13 @@
+import hashlib
 import logging
 import os
+import secrets
 import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Security, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Response, Security, UploadFile, status
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -16,7 +19,19 @@ from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
 from ico_cache.backends.exact.redis_store import RedisStore
 from ico_cache.backends.vector.qdrant_store import QdrantStore
 from ico_cache.core.cache_engine import CacheEngine
+from ico_cache.loaders import configure_ocr
 from ico_cache.rag.pipeline import RAGPipeline
+from ico_cache.telemetry.langfuse import init_langfuse
+from ico_cache.telemetry.logging import configure_logging
+from ico_cache.telemetry.metrics import (
+    CONTENT_TYPE_LATEST,
+    record_request,
+    render_metrics,
+    set_backend_up,
+)
+from ico_cache.telemetry.tracing import setup_tracing
+
+from examples.financial_schema import financial_schema
 
 try:
     from .config import settings
@@ -26,8 +41,16 @@ except (ImportError, ValueError):
     except ImportError:
         from config import settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+configure_logging(json_logs=settings.log_json, level=settings.log_level)
 logger = logging.getLogger("financial_rag_api")
+
+# Observability + universal OCR configured from settings before engines start.
+setup_tracing(service_name=settings.otel_service_name, otlp_endpoint=settings.otel_exporter_otlp_endpoint)
+configure_ocr(
+    enabled=settings.ocr_enabled,
+    languages=settings.ocr_languages,
+    dpi=settings.ocr_dpi,
+)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -38,15 +61,34 @@ def get_tenant_from_api_key(api_key: Optional[str] = Security(api_key_header)) -
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key. Provide a valid 'X-API-Key' header.",
         )
-    if api_key not in settings.api_keys:
+    # Compare against every configured key with a constant-time comparison so
+    # neither the match result nor which key matched is leaked via timing.
+    matched_tenant: Optional[str] = None
+    for configured_key, tenant_id in settings.api_keys.items():
+        if secrets.compare_digest(configured_key, api_key):
+            matched_tenant = tenant_id
+    if matched_tenant is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key.",
         )
-    return settings.api_keys[api_key]
+    return matched_tenant
 
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["1000/minute"])
+def _rate_limit_key(request: Request) -> str:
+    """Per-API-key limiting (hashed, never stored raw); falls back to client IP."""
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:32]
+    return get_remote_address(request)
+
+
+# Redis-backed store makes limits shared across replicas; memory:// in dev.
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    default_limits=[settings.rate_limit_default],
+    storage_uri=settings.resolved_rate_limit_storage_uri,
+)
 app = FastAPI(title="ICO-Agent API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -56,8 +98,6 @@ app.add_middleware(SlowAPIMiddleware)
 embedder = FastEmbedder()
 vector_store = QdrantStore(host=settings.qdrant_host, port=settings.qdrant_port)
 exact_store = RedisStore(host=settings.redis_host, port=settings.redis_port, password=settings.redis_auth)
-
-from examples.financial_schema import financial_schema
 
 engine = CacheEngine(
     embedder=embedder,
@@ -71,8 +111,42 @@ engine = CacheEngine(
 rag_pipeline = RAGPipeline(
     dense_embedder=embedder,
     vector_store=vector_store,
-    collection_name="ico_corpus"
+    collection_name="ico_corpus",
+    model=settings.llm_model,
+    api_key=settings.gemini_api_key,
+    timeout=settings.llm_timeout_seconds,
+    num_retries=settings.llm_max_retries,
+    langfuse=init_langfuse(
+        host=settings.langfuse_host,
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+    ),
 )
+
+# Ingestion is confined to a single root directory. Both the path-based and the
+# upload endpoints resolve inside it, preventing arbitrary file read/write.
+INGEST_ROOT = os.path.realpath(settings.ingest_root_dir)
+UPLOAD_DIR = os.path.join(INGEST_ROOT, "uploads")
+try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+except OSError as exc:  # pragma: no cover - depends on deployment filesystem
+    logger.warning(f"Ingest directory not writable at startup: {exc}")
+
+
+def _safe_ingest_path(file_path: str) -> str:
+    """Resolve a client-supplied path inside INGEST_ROOT, rejecting escapes."""
+    candidate = os.path.realpath(os.path.join(INGEST_ROOT, file_path))
+    if candidate != INGEST_ROOT and not candidate.startswith(INGEST_ROOT + os.sep):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="file_path must be inside the configured ingest directory.",
+        )
+    if not os.path.isfile(candidate):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {file_path}",
+        )
+    return candidate
 
 
 # Request/Response Logging Middleware with Request IDs
@@ -80,12 +154,19 @@ rag_pipeline = RAGPipeline(
 async def request_logging_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
     start_time = time.time()
+    try:
+        import structlog
+
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+    except Exception:
+        pass
     logger.info(f"[{request_id}] START {request.method} {request.url.path}")
 
     response = await call_next(request)
 
     duration_ms = (time.time() - start_time) * 1000
     response.headers["X-Request-ID"] = request_id
+    record_request(request.method, request.url.path, response.status_code)
     logger.info(
         f"[{request_id}] END {request.method} {request.url.path} status={response.status_code} duration={duration_ms:.2f}ms"
     )
@@ -108,8 +189,7 @@ class InvalidateRequest(BaseModel):
 v1_router = APIRouter(prefix="/v1")
 
 
-@v1_router.get("/health")
-def health():
+def _check_backends() -> dict:
     redis_status = "disconnected"
     try:
         client = getattr(exact_store, "client", None) or getattr(exact_store, "r", None)
@@ -126,14 +206,37 @@ def health():
     except Exception:
         pass
 
-    overall = "ok" if (redis_status == "connected" and qdrant_status == "connected") else "degraded"
+    set_backend_up("redis", redis_status == "connected")
+    set_backend_up("qdrant", qdrant_status == "connected")
+    return {"redis": redis_status, "qdrant": qdrant_status}
+
+
+@v1_router.get("/health")
+def health():
+    backends = _check_backends()
+    overall = "ok" if all(v == "connected" for v in backends.values()) else "degraded"
     return {
         "status": overall,
-        "backends": {
-            "redis": redis_status,
-            "qdrant": qdrant_status,
-        }
+        "backends": backends,
     }
+
+
+@v1_router.get("/ready")
+def readiness():
+    """Kubernetes readiness: 503 (fails the probe) whenever any backend is down."""
+    backends = _check_backends()
+    unavailable = [name for name, state in backends.items() if state != "connected"]
+    if unavailable:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "degraded", "backends": backends, "unavailable": unavailable},
+        )
+    return {"status": "ready", "backends": backends}
+
+
+@v1_router.get("/metrics", include_in_schema=False)
+def metrics_endpoint():
+    return Response(content=render_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
 @v1_router.post("/query")
@@ -150,27 +253,25 @@ async def query_endpoint(
         )
     target_tenant = req.tenant_id or authed_tenant
 
-    cached = await engine.resolve(req.query, req.context, tenant_id=target_tenant)
-    if cached["source"] != "MISS":
-        return cached
+    async def _generate():
+        ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(
+            req.query, tenant_id=target_tenant, model=req.model
+        )
+        return {
+            "answer": ans,
+            "citations": citations,
+            "score": score,
+            "chunks": getattr(rag_pipeline, "last_retrieved_chunks", []),
+        }
 
-    # MISS -> generate
-    ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(
-        req.query, tenant_id=target_tenant, model=req.model
+    # Single-flight: concurrent identical misses share one generation; error or
+    # "insufficient context" results are returned but never cached.
+    return await engine.resolve_or_generate(
+        req.query,
+        req.context,
+        tenant_id=target_tenant,
+        generate_fn=_generate,
     )
-    generated = {
-        "answer": ans,
-        "citations": citations,
-        "score": score,
-        "chunks": getattr(rag_pipeline, "last_retrieved_chunks", []),
-    }
-
-    engine.set_l1(req.query, generated, tenant_id=target_tenant)
-    await engine.async_write_l2(req.query, generated, tenant_id=target_tenant)
-    if req.context:
-        await engine.async_write_l3(req.query, req.context, generated, tenant_id=target_tenant)
-
-    return {"source": "MISS", "response": generated}
 
 
 @v1_router.post("/compare")
@@ -233,23 +334,11 @@ async def test_layer_endpoint(
 
 
 @v1_router.post("/clear_cache")
-def clear_cache_endpoint(authed_tenant: str = Depends(get_tenant_from_api_key)):
-    try:
-        if hasattr(exact_store, "client") and exact_store.client:
-            exact_store.client.flushdb()
-    except Exception:
-        pass
-    try:
-        coll_l2 = engine._coll_name("l2_cache", authed_tenant)
-        coll_l3 = engine._coll_name("l3_cache", authed_tenant)
-        if vector_store.collection_exists(coll_l2):
-            vector_store.delete_collection(coll_l2)
-        if vector_store.collection_exists(coll_l3):
-            vector_store.delete_collection(coll_l3)
-        engine._setup_collections(tenant_id=authed_tenant)
-    except Exception:
-        pass
-    return {"status": "cleared"}
+async def clear_cache_endpoint(authed_tenant: str = Depends(get_tenant_from_api_key)):
+    # Tenant-scoped purge. Never flush the whole Redis DB: that would wipe every
+    # tenant and the shared Langfuse queues for any valid key.
+    result = await engine.invalidate(tenant_id=authed_tenant)
+    return {"status": "cleared", "tenant_id": authed_tenant, "details": result}
 
 
 @v1_router.post("/invalidate")
@@ -300,16 +389,17 @@ async def ingest_endpoint(
     from ico_cache.async_ingest import job_manager
 
     try:
+        resolved_path = _safe_ingest_path(req.file_path)
         job = job_manager.submit_ingest(
-            file_path=req.file_path,
+            file_path=resolved_path,
             tenant_id=target_tenant,
             cache_engine=engine,
             schema=financial_schema,
             force_async=req.force_async,
         )
         return job.dict()
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -329,12 +419,32 @@ async def ingest_upload_endpoint(
     target_tenant = tenant_id or authed_tenant
     from ico_cache.async_ingest import job_manager
 
-    upload_dir = "/tmp/ico_uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-    temp_path = os.path.join(upload_dir, file.filename or f"upload_{uuid.uuid4().hex[:8]}")
-    with open(temp_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
+    # Never trust the client filename: strip any path components and replace
+    # empty/dot names. Confine the write to UPLOAD_DIR and cap the body size.
+    filename = os.path.basename(file.filename or "").strip()
+    if not filename or filename in {".", ".."}:
+        filename = f"upload_{uuid.uuid4().hex[:8]}"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    temp_path = os.path.join(UPLOAD_DIR, filename)
+
+    total = 0
+    try:
+        with open(temp_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds the {settings.max_upload_bytes} byte limit.",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
     try:
         job = job_manager.submit_ingest(
@@ -383,6 +493,8 @@ app.include_router(v1_router)
 # Also expose unversioned aliases for backward compatibility with existing clients/tests
 legacy_router = APIRouter()
 legacy_router.add_api_route("/health", health, methods=["GET"])
+legacy_router.add_api_route("/ready", readiness, methods=["GET"])
+legacy_router.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
 legacy_router.add_api_route("/query", query_endpoint, methods=["POST"])
 legacy_router.add_api_route("/compare", compare_endpoint, methods=["POST"])
 legacy_router.add_api_route("/test_layer/{layer}", test_layer_endpoint, methods=["POST"])

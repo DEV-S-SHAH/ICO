@@ -62,9 +62,10 @@ def test_auth_valid_key_matching_tenant(client):
         )
         assert response.status_code == 200
         assert response.json()["source"] == "L2"
-        mock_resolve.assert_awaited_once_with(
-            "What is tenant A revenue?", None, tenant_id="tenant_a"
-        )
+        mock_resolve.assert_awaited_once()
+        call = mock_resolve.await_args
+        assert call.args[0] == "What is tenant A revenue?"
+        assert call.kwargs.get("tenant_id") == "tenant_a"
 
 
 def test_auth_valid_key_default_tenant(client):
@@ -82,9 +83,10 @@ def test_auth_valid_key_default_tenant(client):
         )
         assert response.status_code == 200
         assert response.json()["source"] == "L1"
-        mock_resolve.assert_awaited_once_with(
-            "What is revenue?", None, tenant_id="tenant_a"
-        )
+        mock_resolve.assert_awaited_once()
+        call = mock_resolve.await_args
+        assert call.args[0] == "What is revenue?"
+        assert call.kwargs.get("tenant_id") == "tenant_a"
 
 
 def test_auth_key_tenant_mismatch(client):

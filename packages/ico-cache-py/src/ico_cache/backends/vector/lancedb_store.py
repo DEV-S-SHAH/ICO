@@ -1,7 +1,16 @@
 import json
+import re
 import lancedb
 from typing import Any, List, Optional
 from ..base import BaseVectorStore
+
+# Metadata keys/filter field names are identifiers, never expressions.
+_IDENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _sql_str(value: Any) -> str:
+    """Render a value as a single-quoted SQL string literal, escaping quotes."""
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 class LanceDBStore(BaseVectorStore):
@@ -28,10 +37,12 @@ class LanceDBStore(BaseVectorStore):
             row = {"id": id, "vector": vector}
 
         for k, v in payload.items():
-            if k == "meta" and isinstance(v, dict):
-                row[k] = json.dumps(v)
+            # Structured values are stored as JSON text (LanceDB rows are flat),
+            # and decoded again on read. Never rely on Python repr().
+            if isinstance(v, (dict, list)):
+                row[k] = json.dumps(v, default=str)
             else:
-                row[k] = str(v) if isinstance(v, dict) else v
+                row[k] = v
 
         if collection not in self._table_names():
             self.db.create_table(collection, data=[row])
@@ -89,14 +100,9 @@ class LanceDBStore(BaseVectorStore):
             # Reconstruct dict payload
             payload_dict = {}
             for k, v in r.items():
-                if k == "meta" and isinstance(v, str):
+                if k in ("meta", "answer") and isinstance(v, str):
                     try:
                         payload_dict[k] = json.loads(v)
-                    except Exception:
-                        payload_dict[k] = v
-                elif k == "answer" and isinstance(v, str):
-                    try:
-                        payload_dict[k] = json.loads(v.replace("'", '"'))
                     except Exception:
                         payload_dict[k] = v
                 else:
@@ -132,11 +138,19 @@ class LanceDBStore(BaseVectorStore):
         table = self.db.open_table(collection)
         clauses = []
         for k, v in filter_dict.items():
+            # Reject keys that could break out of the identifier/JSON context.
+            if not isinstance(k, str) or not _IDENT_RE.match(k):
+                continue
+            if not isinstance(v, (str, int, float, bool)):
+                continue
             if k == "tenant_id":
-                clauses.append(f"tenant_id = '{v}'")
+                clauses.append(f"tenant_id = {_sql_str(v)}")
             else:
-                # LanceDB stores meta as json string or payload fields
-                clauses.append(f"meta LIKE '%\"{k}\": \"{v}\"%'")
+                # LanceDB stores meta as a JSON string; match the escaped literal.
+                pattern = '%"' + str(k) + '": "' + str(v) + '"%'
+                clauses.append("meta LIKE " + _sql_str(pattern))
+        if not clauses:
+            return 0
         where_clause = " AND ".join(clauses)
         try:
             table.delete(where_clause)

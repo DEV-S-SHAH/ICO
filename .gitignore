@@ -5,10 +5,25 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.log
+
+# Local secrets — never commit real credentials
+.env
+.env.local
 test_lancedb/
 lancedb/
 *.db
 .DS_Store
+
+# Data corpora — the project is dataset-free by design; ingest your own documents.
+# Keep any generated/bundled data out of the repository.
+examples/**/datasets/
+examples/**/raw/
+examples/**/processed/
+examples/**/chunks/
+examples/**/data/
+examples/test-corpus/
+*.jsonl
+*.htm
 
 # Temporary scratch scripts and logs
 /build_compose.py

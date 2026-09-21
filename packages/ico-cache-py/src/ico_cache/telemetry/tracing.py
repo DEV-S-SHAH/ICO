@@ -1,10 +1,53 @@
+import logging
+import os
 import time
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 from opentelemetry import trace
 from opentelemetry.trace import Tracer, Span
 
+logger = logging.getLogger("ico_cache.telemetry.tracing")
+
 TRACER_NAME = "ico_cache"
+
+
+def setup_tracing(
+    service_name: Optional[str] = None,
+    otlp_endpoint: Optional[str] = None,
+) -> Optional[Any]:
+    """Configure an OTLP span exporter when an endpoint is provided.
+
+    No-op (returns None) when no endpoint is configured or the exporter package
+    is not installed, so the library works without observability dependencies.
+    Honours ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_SERVICE_NAME`` env vars.
+    """
+    endpoint = otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return None
+
+    try:
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+    except ImportError as e:
+        logger.warning("OTLP exporter not installed; tracing disabled: %s", e)
+        return None
+
+    try:
+        resource = Resource.create(
+            {"service.name": service_name or os.getenv("OTEL_SERVICE_NAME") or "ico-cache"}
+        )
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+        trace.set_tracer_provider(provider)
+        logger.info("OTLP tracing enabled for %s", endpoint)
+        return provider
+    except Exception as e:  # pragma: no cover - depends on collector availability
+        logger.warning("Failed to configure OTLP tracing: %s", e)
+        return None
 
 
 def get_tracer() -> Tracer:

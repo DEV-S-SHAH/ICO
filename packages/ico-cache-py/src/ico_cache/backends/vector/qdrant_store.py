@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from typing import List, Any, Optional
 from qdrant_client import QdrantClient, AsyncQdrantClient
@@ -28,25 +29,25 @@ class QdrantStore(BaseVectorStore):
         )
 
     async def search(self, collection: str, vector: Any, query_filter: Any, limit: int, score_threshold: float, using: Optional[str] = None, **kwargs: Any) -> List[Any]:
-        # Using synchronous client for search to avoid blocking issues, or await async
+        # Use the async client so the event loop is never blocked by network I/O.
         if using:
-            hits = self.qc.query_points(
+            res = await self.aqc.query_points(
                 collection_name=collection,
                 query=vector,
                 using=using,
                 query_filter=query_filter,
                 limit=limit,
-                score_threshold=score_threshold
-            ).points
+                score_threshold=score_threshold,
+            )
         else:
-            hits = self.qc.query_points(
+            res = await self.aqc.query_points(
                 collection_name=collection,
                 query=vector,
                 query_filter=query_filter,
                 limit=limit,
-                score_threshold=score_threshold
-            ).points
-        return hits
+                score_threshold=score_threshold,
+            )
+        return res.points
 
     async def delete(self, collection: str, id: int):
         await self.aqc.delete(collection_name=collection, points_selector=[id])
@@ -73,11 +74,11 @@ class QdrantStore(BaseVectorStore):
             self.qc.delete_collection(collection)
 
     async def delete_matching(self, collection: str, filter_dict: Optional[dict] = None) -> int:
-        if not self.qc.collection_exists(collection):
+        if not await asyncio.to_thread(self.qc.collection_exists, collection):
             return 0
         from qdrant_client.http import models
         if not filter_dict:
-            self.qc.delete_collection(collection)
+            await asyncio.to_thread(self.qc.delete_collection, collection)
             return -1
         conditions = []
         for k, v in filter_dict.items():

@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -18,11 +17,11 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333/dashboard")
 
 # --- Session State Initialization ---
 if "api_key" not in st.session_state:
-    st.session_state.api_key = "dev-key-default"
+    st.session_state.api_key = os.getenv("ICO_API_KEY", "dev-key-default")
 if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = "default"
 if "model" not in st.session_state:
-    st.session_state.model = "ollama/qwen2.5:3b"
+    st.session_state.model = "gemini/gemini-flash-latest"
 if "history" not in st.session_state:
     st.session_state.history = []
 if "stats" not in st.session_state:
@@ -111,17 +110,17 @@ with st.sidebar:
     # 3. LLM Provider & Model Selector (LiteLLM)
     st.subheader("3. LLM Engine (LiteLLM)")
     model_options = [
-        "ollama/qwen2.5:3b",
-        "ollama/llama3.2",
+        "gemini/gemini-flash-latest",
+        "gemini/gemini-2.5-flash",
+        "gemini/gemini-2.5-pro",
         "openai/gpt-4o-mini",
         "openai/gpt-4o",
         "anthropic/claude-3-5-sonnet-20241022",
-        "gemini/gemini-1.5-flash",
         "groq/llama-3.1-70b-versatile",
         "Custom Model Spec...",
     ]
     curr_model = st.session_state.model
-    m_index = model_options.index(curr_model) if curr_model in model_options else 7
+    m_index = model_options.index(curr_model) if curr_model in model_options else 0
     chosen_model = st.selectbox("Model Provider", model_options, index=m_index)
     if chosen_model == "Custom Model Spec...":
         custom_m = st.text_input("LiteLLM Model Name", value=st.session_state.model)
@@ -419,79 +418,80 @@ with tab_ingest:
                     st.error(f"Upload and ingestion error: {e}")
 
     with ingest_col2:
-        st.markdown("#### Option B: Ingest from Test Corpus")
-        sample_corpus_files = [
-            "examples/test-corpus/text/standard.txt",
-            "examples/test-corpus/text/clean.pdf",
-            "examples/test-corpus/text/scanned.pdf",
-            "examples/test-corpus/structured/standard.csv",
-            "examples/test-corpus/structured/standard.jsonl",
-            "examples/test-corpus/code/standard.py",
-            "examples/test-corpus/code/standard.js",
-            "examples/test-corpus/code/standard.go",
-        ]
-        chosen_corpus_file = st.selectbox("Select Test Corpus File", sample_corpus_files)
+        st.markdown("#### Option B: Ingest a file path on the API server")
+        st.caption(
+            "Point the API at any readable document (CSV, TXT, JSON/JSONL, HTML, PDF including "
+            "scanned/OCR, OpenDocument, DOCX/XLSX/PPTX, images, code). Format is auto-detected "
+            "from content, not the file extension."
+        )
+        chosen_corpus_file = st.text_input(
+            "Server file path",
+            placeholder="/app/data/ingest/report.pdf, /home/user/annual_report.html, ...",
+        )
 
-        if st.button("Ingest Corpus File", type="secondary"):
-            with st.spinner("Submitting corpus file..."):
-                try:
-                    payload = {
-                        "file_path": chosen_corpus_file,
-                        "tenant_id": st.session_state.tenant_id,
-                        "force_async": True,
-                    }
-                    resp = requests.post(
-                        f"{API_URL}/v1/ingest",
-                        json=payload,
-                        headers=get_headers(),
-                        timeout=10,
-                    ).json()
-
-                    job_id = resp.get("job_id")
-                    st.info(f"Ingestion job dispatched: `{job_id}`")
-
-                    # Live Polling
-                    progress_bar = st.progress(0.0)
-                    status_container = st.status(f"Processing corpus job {job_id}...", expanded=True)
-
-                    done = False
-                    poll_attempts = 0
-                    while not done and poll_attempts < 60:
-                        time.sleep(0.5)
-                        poll_attempts += 1
-                        job_data = requests.get(
-                            f"{API_URL}/v1/ingest/jobs/{job_id}",
+        if st.button("Ingest Server File", type="secondary"):
+            if not chosen_corpus_file.strip():
+                st.warning("Enter a server file path first.")
+            else:
+                with st.spinner("Submitting file for ingestion..."):
+                    try:
+                        payload = {
+                            "file_path": chosen_corpus_file,
+                            "tenant_id": st.session_state.tenant_id,
+                            "force_async": True,
+                        }
+                        resp = requests.post(
+                            f"{API_URL}/v1/ingest",
+                            json=payload,
                             headers=get_headers(),
-                            timeout=5,
+                            timeout=10,
                         ).json()
 
-                        status = job_data.get("status", "processing")
-                        tot_c = max(1, job_data.get("chunks_total", 1))
-                        proc_c = job_data.get("chunks_processed", 0)
-                        progress_ratio = min(1.0, proc_c / tot_c)
-                        progress_bar.progress(progress_ratio)
+                        job_id = resp.get("job_id")
+                        st.info(f"Ingestion job dispatched: `{job_id}`")
 
-                        status_container.write(
-                            f"Status: `{status}` | Chunks Processed: `{proc_c} / {tot_c}` | Elapsed: `{job_data.get('elapsed_s', 0):.1f}s`"
-                        )
+                        # Live Polling
+                        progress_bar = st.progress(0.0)
+                        status_container = st.status(f"Processing corpus job {job_id}...", expanded=True)
 
-                        if status in ["completed", "failed"]:
-                            done = True
-                            if status == "completed":
-                                status_container.update(
-                                    label=f"✓ Completed! {proc_c} chunks in {job_data.get('elapsed_s', 0):.2f}s",
-                                    state="complete",
-                                )
-                                st.success(f"Ingested `{chosen_corpus_file}` into tenant `{st.session_state.tenant_id}`.")
-                            else:
-                                status_container.update(
-                                    label=f"✕ Failed: {job_data.get('error')}",
-                                    state="error",
-                                )
-                                st.error(f"Error: {job_data.get('error')}")
+                        done = False
+                        poll_attempts = 0
+                        while not done and poll_attempts < 60:
+                            time.sleep(0.5)
+                            poll_attempts += 1
+                            job_data = requests.get(
+                                f"{API_URL}/v1/ingest/jobs/{job_id}",
+                                headers=get_headers(),
+                                timeout=5,
+                            ).json()
 
-                except Exception as e:
-                    st.error(f"Corpus ingestion error: {e}")
+                            status = job_data.get("status", "processing")
+                            tot_c = max(1, job_data.get("chunks_total", 1))
+                            proc_c = job_data.get("chunks_processed", 0)
+                            progress_ratio = min(1.0, proc_c / tot_c)
+                            progress_bar.progress(progress_ratio)
+
+                            status_container.write(
+                                f"Status: `{status}` | Chunks Processed: `{proc_c} / {tot_c}` | Elapsed: `{job_data.get('elapsed_s', 0):.1f}s`"
+                            )
+
+                            if status in ["completed", "failed"]:
+                                done = True
+                                if status == "completed":
+                                    status_container.update(
+                                        label=f"✓ Completed! {proc_c} chunks in {job_data.get('elapsed_s', 0):.2f}s",
+                                        state="complete",
+                                    )
+                                    st.success(f"Ingested `{chosen_corpus_file}` into tenant `{st.session_state.tenant_id}`.")
+                                else:
+                                    status_container.update(
+                                        label=f"✕ Failed: {job_data.get('error')}",
+                                        state="error",
+                                    )
+                                    st.error(f"Error: {job_data.get('error')}")
+
+                    except Exception as e:
+                        st.error(f"Corpus ingestion error: {e}")
 
 # ==============================================================================
 # TAB 3: Audit Log & Cache Layer Dashboard

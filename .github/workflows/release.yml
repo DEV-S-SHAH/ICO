@@ -4,15 +4,37 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
   packages: write
+  id-token: write
+
+# Never let two releases race on the same tag (double PyPI/npm publish).
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
     name: Build, Gate, and Publish Release
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.pypi_prod.outcome }}
+    env:
+      # Resolve the tag for both push-tag and manual dispatch triggers.
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Job-level credential flags: secrets are NOT available in step-level
+      # `if:` from a step's own env, which silently disabled every gate before.
+      HAS_PYPI: ${{ secrets.PYPI_API_TOKEN != '' }}
+      HAS_TEST_PYPI: ${{ secrets.TEST_PYPI_API_TOKEN != '' }}
+      HAS_NPM: ${{ secrets.NPM_TOKEN != '' }}
     services:
       redis:
         image: redis:7-alpine
@@ -36,7 +58,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+
+      - name: Validate release credentials
+        run: |
+          if [ "${HAS_PYPI}" != "true" ] && [ "${HAS_NPM}" != "true" ]; then
+            echo "::error::Neither PYPI_API_TOKEN nor NPM_TOKEN is configured; refusing to cut a release."
+            exit 1
+          fi
 
       - name: Wait for Qdrant to be ready
         run: |
@@ -50,10 +80,10 @@ jobs:
           done
           curl -sf http://localhost:6333/ || (echo "ERROR: Qdrant not ready after 60s" && exit 1)
 
-      - name: Set up Python 3.9
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
           cache: 'pip'
 
       - name: Set up Node.js 20
@@ -92,7 +122,7 @@ jobs:
           twine check dist/*
 
       - name: Publish to TestPyPI First
-        if: env.TEST_PYPI_API_TOKEN != ''
+        if: env.HAS_TEST_PYPI == 'true'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
@@ -100,9 +130,7 @@ jobs:
           twine upload --repository testpypi packages/ico-cache-py/dist/* --skip-existing
 
       - name: TestPyPI Smoke Test
-        if: env.TEST_PYPI_API_TOKEN != ''
-        env:
-          TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        if: env.HAS_TEST_PYPI == 'true'
         run: |
           python3 -m venv testpypi_venv
           source testpypi_venv/bin/activate
@@ -112,6 +140,8 @@ jobs:
           rm -rf testpypi_venv
 
       - name: Publish to Production PyPI
+        id: pypi_prod
+        if: env.HAS_PYPI == 'true'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -120,24 +150,22 @@ jobs:
 
       # JavaScript SDK Packaging & Publish
       - name: Build JS SDK (ico-cache-js)
-        if: env.NPM_TOKEN != ''
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: env.HAS_NPM == 'true'
         run: |
           cd packages/ico-cache-js
           npm ci || npm install
           npm run build
 
       - name: Publish to npm (Dry Run)
-        if: env.NPM_TOKEN != ''
+        if: env.HAS_NPM == 'true'
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd packages/ico-cache-js
           npm publish --dry-run
 
       - name: Publish to npm
-        if: env.NPM_TOKEN != ''
+        if: env.HAS_NPM == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -159,9 +187,10 @@ jobs:
           context: .
           file: apps/financial-rag-demo/docker/Dockerfile.api
           push: true
+          provenance: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/ico-cache:latest
-            ghcr.io/${{ github.repository_owner }}/ico-cache:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/ico-cache:${{ env.RELEASE_TAG }}
 
       # GitHub Release Generation
       - name: Create GitHub Release with Notes
@@ -169,22 +198,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 scripts/check_changelog.py --extract > RELEASE_NOTES.md
-          gh release create "${{ github.ref_name }}" \
-            --title "Release ${{ github.ref_name }}" \
+          gh release create "${RELEASE_TAG}" \
+            --title "Release ${RELEASE_TAG}" \
             --notes-file RELEASE_NOTES.md
 
   fresh-install-smoke-test:
     name: Post-Release Fresh-Install Smoke Test
     needs: [release]
+    # Only meaningful when something was actually published to PyPI.
+    if: needs.release.outputs.published == 'success'
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      HAS_NPM: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
-      - name: Set up Python 3.9
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
@@ -203,17 +239,15 @@ jobs:
 
       - name: Fresh-Install Smoke Test (PyPI)
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "Installing published version ico-cache==${VERSION} from PyPI..."
           pip install --no-cache-dir "ico-cache==${VERSION}"
           python3 scripts/smoke_test_installed.py
 
       - name: Fresh-Install Smoke Test (npm)
-        if: env.NPM_TOKEN != ''
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: env.HAS_NPM == 'true'
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "Installing published version ico-cache-js@${VERSION} from npm..."
           npm install -g "ico-cache-js@${VERSION}"
           node scripts/smoke_test_installed_js.js
@@ -225,7 +259,7 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           echo "CRITICAL: Fresh-install smoke test failed post-publish!"
           echo "Yanking release on PyPI..."
           pip install twine
@@ -238,4 +272,3 @@ jobs:
             echo "NPM_TOKEN not set — skipping npm deprecation."
           fi
           exit 1
-

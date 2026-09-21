@@ -50,6 +50,30 @@ async def test_provider_ollama():
         assert mock_comp.call_args.kwargs["api_base"] == "http://localhost:11434"
 
 @pytest.mark.asyncio
+async def test_provider_gemini_defaults():
+    pipeline = RAGPipeline(
+        dense_embedder=DummyEmbedder(),
+        vector_store=DummyVectorStore(),
+        model="gemini/gemini-flash-latest",
+        api_key="AQ.test-key",
+        timeout=42.0,
+        num_retries=5,
+    )
+
+    fake_resp = MagicMock()
+    fake_resp.choices = [MagicMock(message=MagicMock(content="Gemini grounded answer."))]
+
+    with patch("litellm.completion", return_value=fake_resp) as mock_comp:
+        ans, *_ = await pipeline.generate("What are Apple's risks?")
+        assert ans == "Gemini grounded answer."
+        kwargs = mock_comp.call_args.kwargs
+        assert kwargs["model"] == "gemini/gemini-flash-latest"
+        assert kwargs["api_key"] == "AQ.test-key"
+        assert kwargs["timeout"] == 42.0
+        assert kwargs["num_retries"] == 5
+
+
+@pytest.mark.asyncio
 async def test_provider_hosted_openai():
     pipeline = RAGPipeline(
         dense_embedder=DummyEmbedder(),

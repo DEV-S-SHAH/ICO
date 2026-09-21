@@ -1,7 +1,12 @@
 import json
 import logging
 import asyncio
-from typing import Optional
+import os
+import signal
+import sys
+import threading
+import time
+from typing import Callable, Optional
 from .core.cache_engine import CacheEngine
 from .backends.base import BaseExactStore
 
@@ -46,6 +51,8 @@ class InvalidationWorker:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._last_id = "0-0"
+        # Updated on every loop iteration; used by the liveness/readiness probe.
+        self.last_heartbeat = time.time()
 
     async def process_event(self, tenant_id: str, filter_dict: Optional[dict] = None) -> dict:
         """Process an invalidation event on the engine."""
@@ -93,6 +100,7 @@ class InvalidationWorker:
         """Start the background consumer loop."""
         self._running = True
         while self._running:
+            self.last_heartbeat = time.time()
             try:
                 await self.run_once(count=20, block=200)
             except Exception as e:
@@ -104,3 +112,116 @@ class InvalidationWorker:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
+
+
+class _HealthServer:
+    """Minimal HTTP probe server for the worker (liveness/readiness)."""
+
+    def __init__(self, port: int, heartbeat: Callable[[], float], max_age: float = 30.0):
+        self.port = port
+        self.heartbeat = heartbeat
+        self.max_age = max_age
+        self._httpd = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        heartbeat = self.heartbeat
+        max_age = self.max_age
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 (stdlib naming)
+                alive = (time.time() - heartbeat()) < max_age
+                payload = json.dumps({"status": "ok" if alive else "stalled"}).encode()
+                self.send_response(200 if alive else 503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):  # silence per-request access logs
+                return
+
+        httpd = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
+        self._httpd = httpd
+        self._thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+
+
+def _build_engine() -> CacheEngine:
+    from .backends.embedding.fastembed_embedder import FastEmbedder
+    from .backends.exact.redis_store import RedisStore
+    from .backends.vector.qdrant_store import QdrantStore
+
+    return CacheEngine(
+        embedder=FastEmbedder(),
+        vector_store=QdrantStore(
+            host=os.getenv("QDRANT_HOST", "localhost"),
+            port=int(os.getenv("QDRANT_PORT", "6333")),
+        ),
+        exact_store=RedisStore(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_AUTH") or None,
+        ),
+        tenant_isolation_mode=os.getenv("TENANT_ISOLATION_MODE", "collection"),
+    )
+
+
+def main() -> int:
+    """Entry point for the standalone invalidation worker container."""
+    from .telemetry.logging import configure_logging
+
+    configure_logging(
+        json_logs=os.getenv("LOG_JSON", "true").strip().lower() not in {"0", "false", "no", "off"},
+        level=os.getenv("LOG_LEVEL", "INFO"),
+    )
+
+    engine = _build_engine()
+    worker = InvalidationWorker(
+        engine,
+        stream_name=os.getenv("INVALIDATION_STREAM", "cache_invalidation"),
+        group_name=os.getenv("INVALIDATION_GROUP", "ico_invalidation_group"),
+        consumer_name=os.getenv("INVALIDATION_CONSUMER", f"worker-{os.getpid()}"),
+    )
+
+    health: Optional[_HealthServer] = None
+    if os.getenv("WORKER_HEALTH_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            health = _HealthServer(
+                port=int(os.getenv("WORKER_HEALTH_PORT", "8081")),
+                heartbeat=lambda: worker.last_heartbeat,
+            )
+            health.start()
+            logger.info("worker health probe listening on port %s", health.port)
+        except OSError as e:
+            logger.warning("could not start worker health server: %s", e)
+            health = None
+
+    def _handle_signal(signum, _frame):
+        logger.info("received signal %s; shutting down", signum)
+        worker.stop()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    logger.info("invalidation worker starting")
+    try:
+        asyncio.run(worker.start())
+    except KeyboardInterrupt:  # pragma: no cover
+        worker.stop()
+    finally:
+        if health is not None:
+            health.stop()
+    logger.info("invalidation worker stopped")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

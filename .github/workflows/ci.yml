@@ -46,7 +46,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -58,7 +58,7 @@ jobs:
 
       - name: Lint (Ruff)
         run: |
-          ruff check packages/ico-cache-py/src
+          ruff check packages/ico-cache-py/src apps/financial-rag-demo
 
       - name: Type-check (Mypy)
         run: |
@@ -80,13 +80,46 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Build JS SDK
         run: |
           cd packages/ico-cache-js
           npm ci || npm install
           npm run build
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/financial-rag-demo/docker/Dockerfile.api
+          push: false
+          load: true
+          tags: ico-cache-api:ci
+
+      - name: Build UI image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/financial-rag-demo/docker/Dockerfile.ui
+          push: false
+          load: true
+          tags: ico-cache-ui:ci
+
+      # Guards the exact regressions that broke fresh-checkout builds:
+      # the gitignored root requirements.txt and the missing examples/ source.
+      - name: Smoke-test API image imports
+        run: |
+          docker run --rm -e PYTHONPATH=/app:/app/apps/financial-rag-demo \
+            --entrypoint python ico-cache-api:ci -c "import importlib.util as u; import ico_cache, slowapi, litellm; import examples.financial_schema as fs; assert fs.financial_schema is not None; assert u.find_spec('api.main') is not None; print('API image import smoke test OK')"
 
   helm-lint-and-template:
     runs-on: ubuntu-latest

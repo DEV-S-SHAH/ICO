@@ -85,39 +85,20 @@ class PDFLoader(BaseLoader):
         # 2. Fallback to OCR if 0 chunks resulted from embedded text layer
         logger.info(f"No text-layer found in {file_path}. Attempting OCR fallback via pdf2image + pytesseract...")
         try:
-            import pdf2image
-            import pytesseract
+            from .ocr import ocr_enabled, ocr_pdf
 
-            images = pdf2image.convert_from_path(file_path)
-            for i, img in enumerate(images):
-                ocr_text = pytesseract.image_to_string(img).strip()
-                if ocr_text:
-                    meta = {
-                        "source_file": file_path,
-                        "page_or_section": f"Page {i+1} (OCR)",
-                        "extraction_method": "ocr",
-                    }
-                    if effective_schema:
-                        extracted = effective_schema.extract(ocr_text)
-                        meta.update({k: v for k, v in extracted.items() if v is not None})
+            if not ocr_enabled():
+                self.last_status = "ocr_disabled"
+                return []
 
-                    chunks.append(
-                        Chunk(
-                            text=ocr_text,
-                            source_file=file_path,
-                            page_or_section=f"Page {i+1} (OCR)",
-                            chunk_index=len(chunks),
-                            metadata=meta,
-                        )
-                    )
-
+            chunks = ocr_pdf(file_path, schema=effective_schema, source_file=file_path)
             if chunks:
                 self.last_status = "ocr_success"
                 return chunks
-            else:
-                self.last_status = "image_only_no_text"
-                logger.warning(f"Image-only PDF, no extractable text found via OCR: {file_path}")
-                return []
+
+            self.last_status = "image_only_no_text"
+            logger.warning(f"Image-only PDF, no extractable text found via OCR: {file_path}")
+            return []
 
         except Exception as ocr_err:
             self.last_status = "ocr_failed"

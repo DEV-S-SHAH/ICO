@@ -7,7 +7,7 @@ name = "ico-cache-monorepo"
 version = "0.1.0"
 description = "ICO-Cache Monorepo"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 [tool.uv.workspace]
 members = [
@@ -16,15 +16,22 @@ members = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = false
 disable_error_code = ["assignment", "call-arg", "arg-type", "return-value", "list-item", "import-untyped"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages/ico-cache-py/tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
 

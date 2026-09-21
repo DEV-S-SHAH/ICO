@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Default LLM is now Google Gemini** (`gemini/gemini-flash-latest` via LiteLLM). Configure with `GEMINI_API_KEY` and `LLM_MODEL`; `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` control timeouts and retries. Ollama is no longer required or shipped as the default.
+- **Python 3.11+ / Node.js 20+**: base images, CI and release workflows, `requires-python`, and ruff/mypy targets upgraded.
+- **Universal, dataset-free by design**: all bundled corpora (`examples/test-corpus`, `examples/sec-filings-corpus/datasets`, `examples/data`) removed from the repository. The test suite and `eval_harness.py` now generate deterministic synthetic fixtures at runtime, so the library ingests any document you provide — no data ships with it.
+
+### Added
+- **Single-flight generation**: `CacheEngine.resolve_or_generate` coalesces concurrent identical cache misses into one generation and performs conditional (insert-if-absent) writes.
+- **Never cache errors**: refusals ("Insufficient context."), empty answers, and generation failures are returned to the caller but never written to L1/L2/L3.
+- **Graceful degradation**: each L1/L2/L3 lookup is bounded by `lookup_timeout` and failures are swallowed to a MISS instead of surfacing a 500.
+- **Stable cache IDs**: L2/L3 point ids are derived from sha256 (process-independent), replacing the non-deterministic `hash()`.
+- **Non-blocking I/O**: embedding, exact-store access, and Qdrant search run off the event loop (`asyncio.to_thread` / async client).
+- **Content-based universal ingestion**: format detection sniffs content (PDF magic bytes, decodable images) rather than trusting extensions; OCR fallback (`OCR_ENABLED` / `OCR_LANGUAGES` / `OCR_DPI`) covers scanned PDFs and images; new loaders for ODT/ODS, DOCX/XLSX/PPTX, and images.
+- **Observability**: Prometheus metrics (`/v1/metrics`), `configure_logging` structured JSON logs, OTel/Langfuse tracing exporters, `/v1/health` + `/v1/ready` probes (readiness 503s when a dependency is down).
+- **Distributed rate limiting**: cluster-wide limit via `RATE_LIMIT_STORAGE_URI` (Redis) with hashed-API-key buckets; `memory://` in dev.
+- **Helm hardening**: Qdrant/Redis StatefulSets with PVCs and retain-on-delete, pod/container `securityContext`s (non-root, read-only root, dropped caps, seccomp), external-secrets operator support, ServiceAccount + automount-off, PodDisruptionBudgets, immutable image digests, and a real worker entrypoint (`python -m ico_cache.invalidation` with a `/healthz` HTTP probe and graceful shutdown).
+- **Dependency automation**: Dependabot (pip/npm/docker/actions) and CodeQL (Python + JavaScript/TypeScript) on push/PR and weekly.
+
+### Fixed
+- Vector payloads are JSON-encoded on write and decoded on read (LanceDB), replacing the lossy `str()` / `replace("'", '"')` round-trip.
+- Test suite: real `conftest.py` with service-free fixtures, `asyncio_mode = "auto"`, a working single-flight stampede test, and unit tests for `resolve`.
+
 ## [1.0.0] - 2026-09-20
 
 ### Added

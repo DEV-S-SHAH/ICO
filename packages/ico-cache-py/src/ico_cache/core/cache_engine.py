@@ -2,6 +2,8 @@
 cache_engine.py — Generalized, dataset-agnostic, multi-tenant ICO-Cache CacheEngine.
 """
 
+import asyncio
+import functools
 import hashlib
 import json
 import time
@@ -10,10 +12,33 @@ from typing import List, Optional
 import structlog
 
 from ..backends.base import BaseEmbedder, BaseExactStore, BaseVectorStore
+from ..telemetry.metrics import (
+    inflight_dec,
+    inflight_inc,
+    record_generation,
+    record_lookup,
+)
 from ..telemetry.tracing import trace_cache_lookup
 from .metadata_guard import MetadataSchema, hard_gate
 
 logger = structlog.get_logger("ico_cache.core.cache_engine")
+
+# Message returned by the RAG pipeline when it refuses to answer. Never cached.
+INSUFFICIENT_CONTEXT = "Insufficient context."
+
+
+async def _run_sync(fn, *args, **kwargs):
+    """Run a blocking callable in a worker thread so it never blocks the loop."""
+    if kwargs:
+        fn = functools.partial(fn, **kwargs)
+    return await asyncio.to_thread(fn, *args)
+
+
+def _stable_id(*parts: str) -> int:
+    """Deterministic, process-independent 64-bit id derived from sha256."""
+    raw = ":".join(str(p) for p in parts)
+    digest = hashlib.sha256(raw.encode()).digest()
+    return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
 
 
 def _canonical_meta_suffix(meta: dict) -> str:
@@ -45,6 +70,7 @@ class CacheEngine:
         adjustment_rate: float = 0.01,
         l1_ttl: int = 3600,
         tenant_isolation_mode: str = "collection",  # "collection" or "payload"
+        lookup_timeout: float = 2.0,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -71,11 +97,14 @@ class CacheEngine:
         self.adjustment_rate = adjustment_rate
 
         self.l1_ttl = l1_ttl
+        self.lookup_timeout = lookup_timeout
 
         self._stats_hits = 0
         self._stats_misses = 0
         self._layer_stats = {"L1": 0, "L2": 0, "L3": 0, "MISS": 0}
         self._collections_setup: dict = {}
+        # Single-flight: in-progress generations keyed by L1 key.
+        self._inflight: dict = {}
 
     def get_metrics(self) -> dict:
         total = self._stats_hits + self._stats_misses
@@ -198,9 +227,12 @@ class CacheEngine:
     ) -> Optional[dict]:
         effective_meta = self._auto_meta(query, meta)
         key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
-        val = self.exact_store.get(key)
+        val = await _run_sync(self.exact_store.get, key)
         if val:
-            return json.loads(val.decode())
+            try:
+                return json.loads(val.decode())
+            except Exception:
+                return None
         return None
 
     def set_l1(
@@ -209,10 +241,13 @@ class CacheEngine:
         response: dict,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
-    ):
+        nx: bool = False,
+    ) -> bool:
         effective_meta = self._auto_meta(query, meta)
         key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
-        self.exact_store.set(key, json.dumps(response).encode(), ex=self.l1_ttl)
+        return self.exact_store.set(
+            key, json.dumps(response).encode(), ex=self.l1_ttl, nx=nx
+        )
 
     # ------------------------------------------------------------------
     # L2 — semantic / vector
@@ -221,11 +256,11 @@ class CacheEngine:
     async def get_l2(
         self, query: str, meta: Optional[dict] = None, tenant_id: str = "default"
     ):
-        self._setup_collections(tenant_id=tenant_id)
+        await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l2 = self._coll_name("l2_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
-        emb = self.embedder.embed(query)
+        emb = await _run_sync(self.embedder.embed, query)
 
         hits = await self.vector_store.search(
             collection=coll_l2,
@@ -249,10 +284,10 @@ class CacheEngine:
         meta: Optional[dict] = None,
         tenant_id: str = "default",
     ):
-        self._setup_collections(tenant_id=tenant_id)
+        await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l2 = self._coll_name("l2_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
-        emb = self.embedder.embed(query)
+        emb = await _run_sync(self.embedder.embed, query)
 
         payload: dict = {"query": query, "answer": generated, "meta": effective_meta}
         if self.tenant_isolation_mode == "payload":
@@ -260,7 +295,12 @@ class CacheEngine:
 
         await self.vector_store.insert(
             collection=coll_l2,
-            id=hash(tenant_id + query + _canonical_meta_suffix(effective_meta)) % (10**10),
+            id=_stable_id(
+                "l2",
+                tenant_id,
+                self._normalize(query),
+                _canonical_meta_suffix(effective_meta),
+            ),
             vector=emb,
             payload=payload,
         )
@@ -276,7 +316,7 @@ class CacheEngine:
         meta: Optional[dict] = None,
         tenant_id: str = "default",
     ):
-        self._setup_collections(tenant_id=tenant_id)
+        await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l3 = self._coll_name("l3_cache", tenant_id)
         if not context or not context.strip():
             return None
@@ -284,8 +324,8 @@ class CacheEngine:
         effective_meta = self._auto_meta(query, meta)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
 
-        emb_q = self.embedder.embed(query)
-        emb_c = self.embedder.embed(context)
+        emb_q = await _run_sync(self.embedder.embed, query)
+        emb_c = await _run_sync(self.embedder.embed, context)
 
         hits_q = await self.vector_store.search(
             collection=coll_l3,
@@ -344,16 +384,15 @@ class CacheEngine:
         meta: Optional[dict] = None,
         tenant_id: str = "default",
     ):
-        self._setup_collections(tenant_id=tenant_id)
+        await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l3 = self._coll_name("l3_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
         ctx_meta = self.schema.extract(context) if self.schema else {}
         full_meta = {**effective_meta, **{k: v for k, v in ctx_meta.items() if v is not None}}
 
-        emb_q = self.embedder.embed(query)
-        emb_c = self.embedder.embed(context)
+        emb_q = await _run_sync(self.embedder.embed, query)
+        emb_c = await _run_sync(self.embedder.embed, context)
 
-        key_raw = tenant_id + ":" + query + ":" + context + _canonical_meta_suffix(full_meta)
         payload: dict = {
             "query": query,
             "context": context,
@@ -365,7 +404,13 @@ class CacheEngine:
 
         await self.vector_store.insert(
             collection=coll_l3,
-            id=hash(key_raw) % (10**10),
+            id=_stable_id(
+                "l3",
+                tenant_id,
+                self._normalize(query),
+                context,
+                _canonical_meta_suffix(full_meta),
+            ),
             vector={"query": emb_q, "context": emb_c},
             payload=payload,
         )
@@ -373,6 +418,18 @@ class CacheEngine:
     # ------------------------------------------------------------------
     # Public resolve
     # ------------------------------------------------------------------
+
+    async def _safe_lookup(self, layer: str, awaitable):
+        """Run a layer lookup with a timeout; any failure degrades to a miss."""
+        try:
+            return await asyncio.wait_for(awaitable, timeout=self.lookup_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "cache_lookup_timeout", layer=layer, timeout_s=self.lookup_timeout
+            )
+        except Exception as e:
+            logger.warning("cache_lookup_failed", layer=layer, error=str(e))
+        return None
 
     async def resolve(
         self,
@@ -386,9 +443,12 @@ class CacheEngine:
         # L1 Lookup
         with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
             t_l1_start = time.perf_counter()
-            res = await self.get_l1(query, meta, tenant_id=tenant_id)
+            res = await self._safe_lookup(
+                "L1", self.get_l1(query, meta, tenant_id=tenant_id)
+            )
             t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
             rec_l1.record_result(hit=res is not None)
+            record_lookup("L1", res is not None, t_l1_ms / 1000)
             if res:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L1"] += 1
@@ -404,9 +464,12 @@ class CacheEngine:
         # L2 Lookup
         with trace_cache_lookup("L2", tenant_id=tenant_id, query=query) as rec_l2:
             t_l2_start = time.perf_counter()
-            res2 = await self.get_l2(query, meta, tenant_id=tenant_id)
+            res2 = await self._safe_lookup(
+                "L2", self.get_l2(query, meta, tenant_id=tenant_id)
+            )
             t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
             rec_l2.record_result(hit=res2 is not None)
+            record_lookup("L2", res2 is not None, t_l2_ms / 1000)
             if res2:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L2"] += 1
@@ -422,9 +485,12 @@ class CacheEngine:
         # L3 Lookup
         with trace_cache_lookup("L3", tenant_id=tenant_id, query=query) as rec_l3:
             t_l3_start = time.perf_counter()
-            res3 = await self.get_l3(query, context, meta, tenant_id=tenant_id)
+            res3 = await self._safe_lookup(
+                "L3", self.get_l3(query, context, meta, tenant_id=tenant_id)
+            )
             t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
             rec_l3.record_result(hit=res3 is not None)
+            record_lookup("L3", res3 is not None, t_l3_ms / 1000)
             if res3:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L3"] += 1
@@ -451,6 +517,105 @@ class CacheEngine:
         )
         return {"source": "MISS", "response": None}
 
+    # ------------------------------------------------------------------
+    # Single-flight resolve-or-generate
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_cacheable(generated) -> bool:
+        """Error and refusal results must never be cached."""
+        if generated is None:
+            return False
+        if isinstance(generated, dict):
+            answer = generated.get("answer")
+            if answer is None:
+                return False
+            if isinstance(answer, str):
+                text = answer.strip()
+                if not text or text == INSUFFICIENT_CONTEXT:
+                    return False
+                if text.startswith("LLM generation failed") or text == "Error generating response.":
+                    return False
+        return True
+
+    async def resolve_or_generate(
+        self,
+        query: str,
+        context: Optional[str] = None,
+        meta: Optional[dict] = None,
+        tenant_id: str = "default",
+        generate_fn=None,
+    ) -> dict:
+        """
+        Cache lookup; on MISS, run ``generate_fn`` under single-flight so that
+        concurrent identical misses trigger exactly one generation. Only
+        successful (cacheable) results are written, and writes are conditional
+        so an already-populated entry is never overwritten.
+        """
+        res = await self.resolve(query, context, meta, tenant_id=tenant_id)
+        if res["source"] != "MISS" or generate_fn is None:
+            return res
+
+        effective_meta = self._auto_meta(query, meta)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
+
+        existing = self._inflight.get(key)
+        if existing is not None:
+            # Join the in-progress generation instead of starting a new one.
+            return await asyncio.shield(existing)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._inflight[key] = future
+        try:
+            result = await self._generate_and_store(
+                query, context, meta, tenant_id, generate_fn
+            )
+            if not future.done():
+                future.set_result(result)
+            return result
+        except BaseException:
+            # Includes CancelledError. Resolve waiters (so they never hang) and
+            # re-raise for the leader. Waiters degrade to a miss rather than
+            # sharing the failure.
+            if not future.done():
+                future.set_result({"source": "MISS", "response": None})
+            raise
+        finally:
+            self._inflight.pop(key, None)
+
+    async def _generate_and_store(
+        self, query, context, meta, tenant_id, generate_fn
+    ) -> dict:
+        # Conditional double-check: another writer may have populated the entry
+        # while this coroutine was waiting to become the leader.
+        existing = await self.get_l1(query, meta, tenant_id=tenant_id)
+        if existing is not None:
+            return {"source": "L1", "response": existing}
+
+        inflight_inc()
+        t_gen = time.perf_counter()
+        try:
+            generated = await generate_fn()
+        finally:
+            record_generation(time.perf_counter() - t_gen)
+            inflight_dec()
+
+        if not self._is_cacheable(generated):
+            return {"source": "MISS", "response": generated}
+
+        if await self.get_l1(query, meta, tenant_id=tenant_id) is not None:
+            # Someone else won the race; do not overwrite.
+            return {"source": "MISS", "response": generated}
+
+        await _run_sync(self.set_l1, query, generated, meta, tenant_id, True)
+        await self.async_write_l2(query, generated, meta=meta, tenant_id=tenant_id)
+        if context:
+            await self.async_write_l3(
+                query, context, generated, meta=meta, tenant_id=tenant_id
+            )
+        return {"source": "MISS", "response": generated}
+
     async def invalidate(
         self, tenant_id: str = "default", filter_dict: Optional[dict] = None
     ) -> dict:
@@ -460,7 +625,7 @@ class CacheEngine:
         # 1. Purge L1
         l1_purged = 0
         if hasattr(self.exact_store, "delete_prefix"):
-            l1_purged = self.exact_store.delete_prefix(f"{tenant_id}:")
+            l1_purged = await _run_sync(self.exact_store.delete_prefix, f"{tenant_id}:")
 
         # 2. Purge L2
         coll_l2 = self._coll_name("l2_cache", tenant_id)
@@ -475,7 +640,7 @@ class CacheEngine:
                 effective_l2_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
             )
         elif hasattr(self.vector_store, "delete_collection") and not filter_dict and self.tenant_isolation_mode != "payload":
-            self.vector_store.delete_collection(coll_l2)
+            await _run_sync(self.vector_store.delete_collection, coll_l2)
             l2_purged = -1
 
         # 3. Purge L3
@@ -491,7 +656,7 @@ class CacheEngine:
                 effective_l3_filter if (filter_dict or self.tenant_isolation_mode == "payload") else None,
             )
         elif hasattr(self.vector_store, "delete_collection") and not filter_dict and self.tenant_isolation_mode != "payload":
-            self.vector_store.delete_collection(coll_l3)
+            await _run_sync(self.vector_store.delete_collection, coll_l3)
             l3_purged = -1
 
         # Reset collections setup cache for this tenant
@@ -499,7 +664,7 @@ class CacheEngine:
             del self._collections_setup[coll_l2]
         if coll_l3 in self._collections_setup:
             del self._collections_setup[coll_l3]
-        self._setup_collections(tenant_id=tenant_id)
+        await _run_sync(self._setup_collections, tenant_id=tenant_id)
 
         logger.info(
             "cache_invalidated",

@@ -1,6 +1,17 @@
 # Default values for ico-cache.
 # This is a YAML-formatted file.
 
+nameOverride: ""
+fullnameOverride: ""
+
+# Pull secrets applied to every pod (e.g. private registry credentials).
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
 # Multi-Tenant Configuration
 tenants:
   isolation_mode: "collection" # "collection" or "payload"
@@ -17,9 +28,37 @@ env:
   ENVIRONMENT: "production"
   API_HOST: "0.0.0.0"
   API_PORT: 8000
-  OLLAMA_HOST: "http://ollama:11434"
-  OLLAMA_MODEL: "qwen2.5:3b"
+  LLM_MODEL: "gemini/gemini-flash-latest"
+  LLM_TIMEOUT_SECONDS: 60
+  LLM_MAX_RETRIES: 3
   LANGFUSE_HOST: "http://langfuse:3000"
+  # In-process rate limiting when empty; set to a redis:// URI for a cluster-wide limit.
+  RATE_LIMIT_STORAGE_URI: ""
+  RATE_LIMIT_DEFAULT: "120/minute"
+  LOG_LEVEL: "INFO"
+  LOG_JSON: "true"
+  OTEL_SERVICE_NAME: "ico-cache-api"
+  # OTLP/HTTP collector endpoint; leave empty to disable tracing export.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OCR_ENABLED: "true"
+  OCR_LANGUAGES: "eng"
+  OCR_DPI: "200"
+
+# Shared pod/container hardening defaults (override per component as needed).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # FastAPI Service Deployment
 api:
@@ -28,6 +67,8 @@ api:
     repository: "ico-cache-api"
     pullPolicy: "IfNotPresent"
     tag: "latest"
+    # When set (e.g. "sha256:abc..."), it takes precedence over tag for immutable deploys.
+    digest: ""
   service:
     type: ClusterIP
     port: 8000
@@ -37,6 +78,9 @@ api:
     maxReplicas: 10
     targetCPUUtilizationPercentage: 80
     targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   resources:
     limits:
       cpu: "1000m"
@@ -44,6 +88,13 @@ api:
     requests:
       cpu: "250m"
       memory: "512Mi"
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Optional per-component overrides; fall back to the shared defaults above.
+  podSecurityContext: {}
+  containerSecurityContext: {}
 
 # Invalidation Worker Deployment (Redis Streams consumer)
 worker:
@@ -53,7 +104,14 @@ worker:
     repository: "ico-cache-api"
     pullPolicy: "IfNotPresent"
     tag: "latest"
-  command: ["python3", "-m", "ico_cache.invalidation"]
+    digest: ""
+  command: ["python", "-m", "ico_cache.invalidation"]
+  health:
+    enabled: true
+    port: 8081
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
   resources:
     limits:
       cpu: "500m"
@@ -61,17 +119,30 @@ worker:
     requests:
       cpu: "100m"
       memory: "256Mi"
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Optional per-component overrides; fall back to the shared defaults above.
+  podSecurityContext: {}
+  containerSecurityContext: {}
 
 # Redis Cache Backend
 redis:
   enabled: true
-  replicaCount: 1
   image:
     repository: "redis"
     tag: "7.2-alpine"
     pullPolicy: "IfNotPresent"
+    digest: ""
   service:
     port: 6379
+  persistence:
+    enabled: true
+    size: "1Gi"
+    storageClass: ""
+    # Requires Kubernetes >= 1.27; PVCs are retained when the StatefulSet is deleted.
+    retainOnDelete: true
   resources:
     limits:
       cpu: "500m"
@@ -79,22 +150,43 @@ redis:
     requests:
       cpu: "100m"
       memory: "128Mi"
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
   auth:
     existingSecret: ""
     passwordKey: "redis-password"
     password: "myredissecret"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # Qdrant Vector DB Backend
 qdrant:
   enabled: true
-  replicaCount: 1
   image:
     repository: "qdrant/qdrant"
     tag: "v1.9.0"
     pullPolicy: "IfNotPresent"
+    digest: ""
   service:
     httpPort: 6333
     grpcPort: 6334
+  persistence:
+    enabled: true
+    size: "5Gi"
+    storageClass: ""
+    # Requires Kubernetes >= 1.27; PVCs are retained when the StatefulSet is deleted.
+    retainOnDelete: true
   resources:
     limits:
       cpu: "1000m"
@@ -102,11 +194,49 @@ qdrant:
     requests:
       cpu: "250m"
       memory: "512Mi"
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
-# Secrets references
+# Secrets
 secrets:
+  # Set false to manage the Secret out-of-band (external-secrets, Vault, SOPS, ...).
+  create: true
   existingSecret: ""
   redisPassword: "myredissecret"
   qdrantApiKey: ""
+  geminiApiKey: ""
   langfusePublicKey: ""
   langfuseSecretKey: ""
+  # Cluster-wide rate-limit backend. When empty it defaults to the bundled Redis
+  # (redis://:<password>@<release>-redis:6379/0), or memory:// when redis is disabled.
+  rateLimitStorageUri: ""
+
+# External Secrets Operator integration. When enabled, the reconciler below
+# materialises the Secret consumed by the API and worker pods.
+externalSecrets:
+  enabled: false
+  refreshInterval: "1h"
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  targetSecretName: ""
+  data: []
+  # Example:
+  # data:
+  #   - secretKey: GEMINI_API_KEY
+  #     remoteRef:
+  #       key: ico-cache/gemini
+  #       property: api_key

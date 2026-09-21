@@ -2,16 +2,18 @@ import pytest
 import asyncio
 import json
 import os
-import hashlib
-import threading
 import time
 
 import sys
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
+tests_dir = os.path.dirname(__file__)
+if tests_dir not in sys.path:
+    sys.path.insert(0, tests_dir)
 
 from examples.financial_schema import financial_schema, extract_fields
+from fixtures_gen import generate_paraphrase_queries, generate_near_miss_queries
 from ico_cache.core.cache_engine import CacheEngine, _canonical_meta_suffix
 from ico_cache.core.metadata_guard import hard_gate
 from ico_cache.backends.vector.qdrant_store import QdrantStore
@@ -22,12 +24,29 @@ from qdrant_client.models import VectorParams, Distance
 REDIS_PASSWORD = "myredissecret"
 FILTER_KEYS    = ["entity", "quarter", "topic"]
 
-@pytest.fixture
-def base_path():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/sec-filings-corpus/datasets/queries"))
+# Deterministic synthetic query sets (replaces the deleted curated
+# examples/sec-filings-corpus/datasets/queries files).
+PARAPHRASES = generate_paraphrase_queries()
+NEAR_MISS   = generate_near_miss_queries()
+
+def is_distributed_available() -> bool:
+    try:
+        from qdrant_client import QdrantClient
+        import redis
+        qc = QdrantClient("localhost", port=6333, timeout=1, check_compatibility=False)
+        qc.get_collections()
+        r = redis.Redis(host="localhost", port=6379, password=REDIS_PASSWORD, socket_timeout=1)
+        r.ping()
+        return True
+    except Exception:
+        return False
+
 
 @pytest.fixture
 def make_engine():
+    if not is_distributed_available():
+        pytest.skip("Distributed stack (Qdrant + Redis) is not available")
+
     def _make(l2_coll="l2_cache", l3_coll="l3_cache"):
         engine = CacheEngine(
             embedder     = FastEmbedder(),
@@ -46,17 +65,9 @@ def make_engine():
         return engine
     return _make
 
-def load_jsonl(path):
-    items = []
-    with open(path) as f:
-        for line in f:
-            if line.strip():
-                items.append(json.loads(line.strip()))
-    return items
-
-def test_1_query_generation_audit(base_path):
-    paraphrases = load_jsonl(os.path.join(base_path, "paraphrases.jsonl"))
-    near_miss   = load_jsonl(os.path.join(base_path, "near_miss_negatives.jsonl"))
+def test_1_query_generation_audit():
+    paraphrases = PARAPHRASES
+    near_miss   = NEAR_MISS
     
     entity_swap  = sum(1 for r in near_miss
         if extract_fields(r["query_1"])["entity"] and extract_fields(r["query_2"])["entity"]
@@ -77,10 +88,10 @@ def test_1_query_generation_audit(base_path):
     assert para_same == len(paraphrases), "Mismatched entities in paraphrases"
 
 @pytest.mark.asyncio
-async def test_2_false_hit_check(make_engine, base_path):
+async def test_2_false_hit_check(make_engine):
     engine = make_engine()
     qc = engine.vector_store.qc
-    near_miss = load_jsonl(os.path.join(base_path, "near_miss_negatives.jsonl"))
+    near_miss = NEAR_MISS
     
     false_hits = 0
     for i, pair in enumerate(near_miss):
@@ -211,32 +222,29 @@ async def test_3_l3_context(make_engine):
 
 @pytest.mark.asyncio
 async def test_4_concurrency(make_engine):
+    """Single-flight: 20 concurrent identical misses trigger exactly one generation."""
     engine = make_engine()
     QUERY = "What was MSFT's revenue in Q3?"
     META  = {"entity": "MSFT", "quarter": "Q3", "topic": "revenue"}
 
-    class GenerationCounter:
-        def __init__(self):
-            self.count = 0
-            self.lock = threading.Lock()
-        def record(self):
-            with self.lock: self.count += 1
+    calls = {"n": 0}
 
-    async def _simulate(counter):
-        if (await engine.resolve(QUERY, meta=META))["source"] == "MISS":
-            counter.record()
-            fake_resp = {"answer": "Generated answer", "query": QUERY}
-            engine.set_l1(QUERY, fake_resp, META)
-            await engine.async_write_l2(QUERY, fake_resp, META)
+    async def generate():
+        calls["n"] += 1
+        await asyncio.sleep(0.1)
+        return {"answer": "Generated answer", "query": QUERY}
 
-    for n in [20]:
-        counter = GenerationCounter()
-        effective_meta = engine._auto_meta(QUERY, META)
-        raw_key = engine._normalize(QUERY) + _canonical_meta_suffix(effective_meta)
-        engine.exact_store.r.delete("l1:" + hashlib.sha256(raw_key.encode()).hexdigest())
+    # Ensure a cold cache for this key.
+    engine.exact_store.delete_prefix("default:")
 
-        await asyncio.gather(*[_simulate(counter) for _ in range(n)])
-        assert counter.count <= 1
+    results = await asyncio.gather(
+        *[
+            engine.resolve_or_generate(QUERY, meta=META, generate_fn=generate)
+            for _ in range(20)
+        ]
+    )
+    assert calls["n"] == 1, f"expected one generation, saw {calls['n']}"
+    assert all(r["response"]["answer"] == "Generated answer" for r in results)
 
 @pytest.mark.asyncio
 async def test_5_adaptive_threshold(make_engine):

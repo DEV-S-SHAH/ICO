@@ -14,16 +14,32 @@ __all__ = [
     "AutoLoader",
 ]
 
-PDFLoader: Optional[Type[BaseLoader]] = None
-try:
-    from ico_cache.loaders.pdf_loader import PDFLoader  # type: ignore[assignment]  # noqa: F401
-    __all__.append("PDFLoader")
-except ImportError:
-    pass
 
+def _register(module_name: str, class_name: str) -> None:
+    """Best-effort optional loader import so missing deps don't break the package."""
+    global_vars = globals()
+    try:
+        module = __import__(f"ico_cache.loaders.{module_name}", fromlist=[class_name])
+        cls = getattr(module, class_name)
+    except ImportError:
+        global_vars[class_name] = None  # type: ignore[assignment]
+        return
+    global_vars[class_name] = cls
+    __all__.append(class_name)
+
+
+PDFLoader: Optional[Type[BaseLoader]] = None
 HTMLLoader: Optional[Type[BaseLoader]] = None
-try:
-    from ico_cache.loaders.html_loader import HTMLLoader  # type: ignore[assignment]  # noqa: F401
-    __all__.append("HTMLLoader")
-except ImportError:
-    pass
+ODFLoader: Optional[Type[BaseLoader]] = None
+OfficeLoader: Optional[Type[BaseLoader]] = None
+ImageLoader: Optional[Type[BaseLoader]] = None
+
+_register("pdf_loader", "PDFLoader")
+_register("html_loader", "HTMLLoader")
+_register("odf_loader", "ODFLoader")
+_register("office_loader", "OfficeLoader")
+_register("image_loader", "ImageLoader")
+
+from ico_cache.loaders.ocr import configure_ocr as configure_ocr  # noqa: E402  (re-exported helper)
+
+__all__.append("configure_ocr")

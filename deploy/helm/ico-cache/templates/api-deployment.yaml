@@ -1,3 +1,5 @@
+{{- $podSecurityContext := .Values.api.podSecurityContext | default .Values.podSecurityContext }}
+{{- $containerSecurityContext := .Values.api.containerSecurityContext | default .Values.containerSecurityContext }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,11 +20,30 @@ spec:
       labels:
         {{- include "ico-cache.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
+      {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" $podSecurityContext) | nindent 6 }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          image: {{ include "ico-cache.image" .Values.api.image | quote }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $containerSecurityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.port }}
@@ -31,18 +52,40 @@ spec:
             - configMapRef:
                 name: {{ include "ico-cache.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "ico-cache.fullname" .)) }}
+                name: {{ include "ico-cache.secretName" . }}
+          startupProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /v1/health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+          # Readiness fails when a dependency is down, pulling the pod out of rotation.
           readinessProbe:
             httpGet:
-              path: /v1/health
+              path: /v1/ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/appuser/.cache
+            - name: ingest
+              mountPath: /app/data/ingest
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: ingest
+          emptyDir: {}

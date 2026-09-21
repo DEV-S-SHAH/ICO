@@ -1,5 +1,0 @@
-ICO-Cache Universal Document Ingestion.
-
-This document describes how raw text files are split on paragraph boundaries into semantic chunks.
-
-Each chunk retains its source metadata, chunk index, and page or section label for citation tracking.

@@ -2,15 +2,25 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import numpy as np
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "packages/ico-cache-py/tests"))
 
 from ico_cache.core.metadata_guard import hard_gate
 from examples.universal_schema import extract_fields as universal_extract_fields, universal_schema
 from examples.financial_schema import extract_fields as financial_extract_fields
 
 embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+
+SYNTHETIC_ASSET_FILES = [
+    "paraphrases.jsonl",
+    "near_miss_negatives.jsonl",
+    "context_dependent.jsonl",
+    "cross_type_adversarial.jsonl",
+]
 
 
 def load_jsonl(filepath):
@@ -28,7 +38,7 @@ def get_embedding(text):
     return list(embedder.embed([text]))[0].tolist()
 
 
-def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant", backend: str = "embedded"):
+def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant", backend: str = "embedded", corpus_dir: str = None):
     """Ingests all three corpus types (text, structured, code) into a single tenant."""
     from ico_cache.loaders.auto_loader import AutoLoader
     from ico_cache.core.cache_engine import CacheEngine
@@ -57,18 +67,24 @@ def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant", backend: str = "em
         )
     auto_loader = AutoLoader(schema=universal_schema)
 
+    if corpus_dir is None:
+        from fixtures_gen import generate_corpus
+        corpus_dir = tempfile.mkdtemp(prefix="ico_eval_corpus_")
+        print(f"Generating synthetic corpus in {corpus_dir} ...")
+        generate_corpus(corpus_dir)
+
     corpus_paths = [
-        "examples/test-corpus/text/standard.txt",
-        "examples/test-corpus/text/clean.pdf",
-        "examples/test-corpus/text/malformed.html",
-        "examples/test-corpus/structured/standard.jsonl",
-        "examples/test-corpus/code/standard.py",
-        "examples/test-corpus/code/standard.js",
-        "examples/test-corpus/code/standard.go",
+        os.path.join(corpus_dir, "text/standard.txt"),
+        os.path.join(corpus_dir, "text/clean.pdf"),
+        os.path.join(corpus_dir, "text/malformed.html"),
+        os.path.join(corpus_dir, "structured/standard.jsonl"),
+        os.path.join(corpus_dir, "code/standard.py"),
+        os.path.join(corpus_dir, "code/standard.js"),
+        os.path.join(corpus_dir, "code/standard.go"),
     ]
     total_ingested = 0
     for path in corpus_paths:
-        if os.path.exists(path):
+        if os.path.exists(path) and os.path.getsize(path) > 0:
             chunks = auto_loader.load(path)
             for c in chunks:
                 dummy_resp = {"content": c.text[:200], "source": c.source_file}
@@ -78,15 +94,14 @@ def ingest_corpus_into_tenant(tenant_id: str = "eval_tenant", backend: str = "em
     return total_ingested
 
 
-def eval_harness(loader_type: str = "text", backend: str = "embedded"):
+def eval_harness(loader_type: str = "text", backend: str = "embedded", data_dir: str = None):
     print(f"Loading datasets for loader-type: {loader_type} (backend: {backend})...")
 
-    # Determine query directory
-    corpus_query_dir = os.path.join("examples/test-corpus/queries", loader_type)
-    if not os.path.exists(corpus_query_dir) or not os.listdir(corpus_query_dir):
-        base_dir = "examples/sec-filings-corpus/datasets/queries"
-    else:
-        base_dir = corpus_query_dir
+    if data_dir is None:
+        from fixtures_gen import generate_eval_assets
+        data_dir = tempfile.mkdtemp(prefix="ico_eval_assets_")
+        print(f"Generating synthetic eval assets in {data_dir} ...")
+        generate_eval_assets(data_dir)
 
     if loader_type in ["structured", "code", "mixed"]:
         extract_fn = universal_extract_fields
@@ -95,9 +110,9 @@ def eval_harness(loader_type: str = "text", backend: str = "embedded"):
         extract_fn = financial_extract_fields
         filter_keys = ["entity", "quarter", "topic"]
 
-    paraphrases = load_jsonl(os.path.join(base_dir, "paraphrases.jsonl"))
-    near_miss = load_jsonl(os.path.join(base_dir, "near_miss_negatives.jsonl"))
-    context_dep = load_jsonl(os.path.join(base_dir, "context_dependent.jsonl"))
+    paraphrases = load_jsonl(os.path.join(data_dir, "paraphrases.jsonl"))
+    near_miss = load_jsonl(os.path.join(data_dir, "near_miss_negatives.jsonl"))
+    context_dep = load_jsonl(os.path.join(data_dir, "context_dependent.jsonl"))
 
     print(f"Loaded {len(paraphrases)} paraphrases, {len(near_miss)} near_miss, {len(context_dep)} context_dep queries.")
 
@@ -260,8 +275,14 @@ def eval_harness(loader_type: str = "text", backend: str = "embedded"):
     }
 
 
-def eval_cross_type_adversarial(filepath: str = "examples/test-corpus/queries/cross_type_adversarial.jsonl", backend: str = "embedded"):
+def eval_cross_type_adversarial(filepath: str = None, backend: str = "embedded"):
     print(f"\n--- CROSS-TYPE ADVERSARIAL EVALUATION (backend: {backend}) ---")
+    if filepath is None:
+        from fixtures_gen import generate_eval_assets
+        data_dir = tempfile.mkdtemp(prefix="ico_eval_assets_")
+        print(f"Generating synthetic eval assets in {data_dir} ...")
+        generate_eval_assets(data_dir)
+        filepath = os.path.join(data_dir, "cross_type_adversarial.jsonl")
     items = load_jsonl(filepath)
     if not items:
         print("No cross-type adversarial query pairs found.")
@@ -348,6 +369,13 @@ if __name__ == "__main__":
         help="Vector and storage backend (embedded or qdrant)",
     )
     parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Directory containing paraphrases.jsonl, near_miss_negatives.jsonl, "
+        "context_dependent.jsonl, and cross_type_adversarial.jsonl. When omitted, "
+        "synthetic eval assets are generated at runtime.",
+    )
+    parser.add_argument(
         "--ingest-tenant",
         action="store_true",
         help="Ingest all corpus types into one tenant before evaluation",
@@ -359,13 +387,20 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    assets_dir = args.data_dir
+    if assets_dir is not None:
+        missing = [f for f in SYNTHETIC_ASSET_FILES if not os.path.exists(os.path.join(assets_dir, f))]
+        if missing:
+            parser.error(f"--data-dir is missing required file(s): {', '.join(missing)}")
+
     if args.ingest_tenant:
         print(f"Ingesting all corpus types into tenant 'eval_unified_tenant' (backend: {args.backend})...")
-        n = ingest_corpus_into_tenant("eval_unified_tenant", backend=args.backend)
+        n = ingest_corpus_into_tenant("eval_unified_tenant", backend=args.backend, corpus_dir=assets_dir)
         print(f"Ingested {n} chunks into 'eval_unified_tenant'.")
 
-    eval_harness(loader_type=args.loader_type, backend=args.backend)
+    eval_harness(loader_type=args.loader_type, backend=args.backend, data_dir=assets_dir)
 
     if args.loader_type == "mixed" or args.eval_adversarial:
-        eval_cross_type_adversarial(backend=args.backend)
+        adv_path = os.path.join(assets_dir, "cross_type_adversarial.jsonl") if assets_dir is not None else None
+        eval_cross_type_adversarial(filepath=adv_path, backend=args.backend)
 

@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "ICO-Cache: Generalized LLM Semantic Cache"
 authors = [{name = "Dev"}]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110.0,<1.0.0",
     "uvicorn>=0.28.0,<1.0.0",
@@ -22,12 +22,13 @@ dependencies = [
     "lancedb>=0.5.0,<1.0.0",
     "structlog>=24.1.0,<26.0.0",
     "litellm>=1.40.0",
+    "prometheus-client>=0.20.0,<1.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
 ]
 
 [project.optional-dependencies]
-# PDF and tree-sitter language support (used by loaders and their tests)
+# Document format support (used by loaders and their tests)
 loaders = [
     "pymupdf>=1.24.0",
     "tree-sitter>=0.23.0",
@@ -35,10 +36,20 @@ loaders = [
     "tree-sitter-go>=0.23.0",
     "pdf2image>=1.16.0",
     "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "odfpy>=1.4.1",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
+]
+# Tracing/metrics exporters
+observability = [
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+    "langfuse>=2.0.0",
 ]
 # Full dev/test environment
 dev = [
-    "ico-cache[loaders]",
+    "ico-cache[loaders,observability]",
     "pytest>=8.0.0",
     "pytest-asyncio>=1.0.0",
     "ruff>=0.4.0",

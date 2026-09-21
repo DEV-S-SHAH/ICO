@@ -1,6 +1,21 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Committed, curated dependency set (no reliance on the gitignored root requirements.txt).
+COPY apps/financial-rag-demo/requirements-demo.txt apps/financial-rag-demo/requirements-demo.txt
+RUN pip install -r apps/financial-rag-demo/requirements-demo.txt
+
 COPY apps/financial-rag-demo/ui apps/financial-rag-demo/ui
+
+# Run as an unprivileged user.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app /home/appuser
+ENV HOME=/home/appuser
+USER appuser
+
 CMD ["streamlit", "run", "apps/financial-rag-demo/ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]

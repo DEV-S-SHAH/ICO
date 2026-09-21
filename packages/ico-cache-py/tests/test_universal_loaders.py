@@ -8,12 +8,19 @@ from ico_cache.loaders.html_loader import HTMLLoader
 from ico_cache.loaders.auto_loader import AutoLoader, ingest
 from examples.universal_schema import universal_schema
 
-CORPUS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/test-corpus"))
+from fixtures_gen import generate_corpus
 
 
-def test_structured_loader_csv():
+@pytest.fixture(scope="session")
+def corpus(tmp_path_factory):
+    """Generate the entire synthetic corpus once per session into a tmp dir."""
+    root = tmp_path_factory.mktemp("corpus")
+    return generate_corpus(str(root))
+
+
+def test_structured_loader_csv(corpus):
     loader = StructuredLoader()
-    csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/products.csv"))
+    csv_path = os.path.join(corpus, "data/products.csv")
     chunks = loader.load(csv_path)
     assert len(chunks) == 3
     assert all(isinstance(c, Chunk) for c in chunks)
@@ -30,9 +37,9 @@ def test_structured_loader_json():
     assert "action: login" in chunks[0].text
 
 
-def test_code_loader_ast():
+def test_code_loader_ast(corpus):
     loader = CodeLoader(language="python")
-    code_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/sample_code.py"))
+    code_path = os.path.join(corpus, "data/sample_code.py")
     chunks = loader.load(code_path)
     assert len(chunks) >= 2
     func_chunk = next(c for c in chunks if c.metadata.get("name") == "calculate_discount")
@@ -44,24 +51,234 @@ def test_code_loader_ast():
     assert "class InventoryManager" in class_chunk.text
 
 
-def test_txt_loader():
+def test_txt_loader(corpus):
     loader = TXTLoader()
-    txt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/sample.txt"))
+    txt_path = os.path.join(corpus, "data/sample.txt")
     chunks = loader.load(txt_path)
     assert len(chunks) == 3
     assert "Universal Document Ingestion" in chunks[0].text
 
 
-def test_auto_loader_dispatch():
-    txt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/sample.txt"))
-    csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/products.csv"))
+def test_ocr_disabled_returns_no_ocr():
+    """
+    Verify configure_ocr(enabled=False) disables content-based OCR fallback,
+    independent of the file type.
+    """
+    import tempfile
+    from ico_cache.loaders.ocr import configure_ocr, ocr_any
+
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        png = os.path.join(td, "scan.png")
+        image = Image.new("RGB", (400, 80), "white")
+        ImageDraw.Draw(image).text((10, 30), "Invoice", fill="black")
+        image.save(png)
+
+        try:
+            configure_ocr(enabled=False)
+            assert ocr_any(png) == []
+        finally:
+            configure_ocr(enabled=True)
+
+
+def _tesseract_available() -> bool:
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def test_odf_formats_universal(tmp_path):
+    """
+    Verify OpenDocument text (.odt) and spreadsheet (.ods) ingests through the
+    universal AutoLoader: body paragraphs, headings and table rows all become chunks.
+    """
+    odf = pytest.importorskip("odf")
+    from odf.opendocument import OpenDocumentText, OpenDocumentSpreadsheet
+    from odf.text import P, H
+    from odf.table import Table, TableRow, TableCell
+
+    auto = AutoLoader(schema=universal_schema)
+
+    # .odt with a paragraph, a heading and a table
+    doc = OpenDocumentText()
+    doc.text.addElement(H(outlinelevel=1, text="Quarterly Report"))
+    doc.text.addElement(P(text="Revenue grew across every region in Q3."))
+    table = Table(name="Q3")
+    header = TableRow()
+    for value in ("region", "revenue"):
+        cell = TableCell()
+        cell.addElement(P(text=value))
+        header.addElement(cell)
+    table.addElement(header)
+    for region, revenue in (("North", "1.2M"), ("South", "0.9M")):
+        row = TableRow()
+        for value in (region, revenue):
+            cell = TableCell()
+            cell.addElement(P(text=value))
+            row.addElement(cell)
+        table.addElement(row)
+    doc.text.addElement(table)
+
+    odt_path = os.path.join(tmp_path, "report.odt")
+    doc.save(odt_path)
+    odt_chunks = auto.load(odt_path)
+    odt_text = "\n".join(c.text for c in odt_chunks)
+    assert "Quarterly Report" in odt_text
+    assert "Revenue grew across every region" in odt_text
+    assert "region: North" in odt_text
+    assert any(c.loader_type == "odf_table" for c in odt_chunks)
+
+    # .ods spreadsheet
+    sheet_doc = OpenDocumentSpreadsheet()
+    sheet = Table(name="Sheet1")
+    for row_values in (("item", "price"), ("widget", "9.99"), ("gadget", "19.99")):
+        row = TableRow()
+        for value in row_values:
+            cell = TableCell()
+            cell.addElement(P(text=value))
+            row.addElement(cell)
+        sheet.addElement(row)
+    sheet_doc.spreadsheet.addElement(sheet)
+
+    ods_path = os.path.join(tmp_path, "prices.ods")
+    sheet_doc.save(ods_path)
+    ods_chunks = auto.load(ods_path)
+    ods_text = "\n".join(c.text for c in ods_chunks)
+    assert "item: widget" in ods_text
+    assert "price: 19.99" in ods_text
+
+
+def test_office_open_xml_formats(tmp_path):
+    """
+    Verify .docx, .xlsx and .pptx ingest through the universal AutoLoader.
+    Skips formats whose optional library is not installed.
+    """
+    auto = AutoLoader(schema=universal_schema)
+    produced = 0
+
+    try:
+        import docx
+
+        document = docx.Document()
+        document.add_paragraph("Quarterly financial outlook for the company.")
+        docx_path = os.path.join(tmp_path, "report.docx")
+        document.save(docx_path)
+        chunks = auto.load(docx_path)
+        assert any("Quarterly financial outlook" in c.text for c in chunks)
+        produced += 1
+    except ImportError:
+        pass
+
+    try:
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.append(["metric", "value"])
+        worksheet.append(["operating_margin", "28.4%"])
+        xlsx_path = os.path.join(tmp_path, "metrics.xlsx")
+        workbook.save(xlsx_path)
+        chunks = auto.load(xlsx_path)
+        assert any("operating_margin" in c.text and "28.4%" in c.text for c in chunks)
+        produced += 1
+    except ImportError:
+        pass
+
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+        box.text_frame.text = "Capital allocation summary"
+        pptx_path = os.path.join(tmp_path, "deck.pptx")
+        presentation.save(pptx_path)
+        chunks = auto.load(pptx_path)
+        assert any("Capital allocation summary" in c.text for c in chunks)
+        produced += 1
+    except ImportError:
+        pass
+
+    if produced == 0:
+        pytest.skip("No office libraries (python-docx/openpyxl/python-pptx) installed")
+
+
+def test_ocr_content_sniffing_ignores_extension(tmp_path):
+    """
+    Verify OCR is content-based: a PNG renamed to an unknown extension is still
+    OCR'd, and an image with a misleading extension is handled via magic bytes.
+    """
+    pytest.importorskip("PIL")
+    from PIL import Image, ImageDraw
+
+    if not _tesseract_available():
+        pytest.skip("tesseract binary not available")
+
+    image = Image.new("RGB", (900, 160), "white")
+    ImageDraw.Draw(image).text((20, 60), "Invoice Total Amount Due", fill="black")
+    disguised = os.path.join(tmp_path, "mystery.dat")
+    image.save(disguised, format="PNG")
+
+    chunks = AutoLoader().load(disguised)
+    assert chunks, "content-based OCR should read a PNG regardless of extension"
+    text = " ".join(c.text for c in chunks)
+    assert "Invoice" in text
+    assert chunks[0].loader_type == "image_ocr"
+    assert chunks[0].metadata.get("extraction_method") == "ocr"
+
+
+def test_image_loader_dispatches_by_extension(tmp_path):
+    """Verify common image extensions route to the OCR ImageLoader."""
+    pytest.importorskip("PIL")
+    from PIL import Image, ImageDraw
+    from ico_cache.loaders.image_loader import ImageLoader
+
+    if not _tesseract_available():
+        pytest.skip("tesseract binary not available")
+
+    image = Image.new("RGB", (900, 160), "white")
+    ImageDraw.Draw(image).text((20, 60), "Scanned Statement Balance", fill="black")
+    for ext in (".png", ".jpg", ".tiff"):
+        path = os.path.join(tmp_path, f"scan{ext}")
+        image.save(path)
+        chunks = ImageLoader().load(path)
+        assert chunks, f"expected OCR text for {ext}"
+        assert "Statement" in chunks[0].text
+
+
+def test_unknown_extension_text_fallback(tmp_path):
+    """Unknown extensions with text content are read as plain text; binary is ignored."""
+    text_path = os.path.join(tmp_path, "notes.custom")
+    with open(text_path, "w") as f:
+        f.write("Universal fallback reads unknown text extensions.\n\nSecond paragraph here.")
+    chunks = AutoLoader().load(text_path)
+    assert len(chunks) == 2
+    assert "Universal fallback" in chunks[0].text
+
+    binary_path = os.path.join(tmp_path, "blob.custom")
+    with open(binary_path, "wb") as f:
+        f.write(bytes(range(256)) * 8)
+    assert AutoLoader().load(binary_path) == []
+
+
+def test_auto_loader_dispatch(corpus):
+    txt_path = os.path.join(corpus, "data/sample.txt")
+    csv_path = os.path.join(corpus, "data/products.csv")
     chunks = ingest(path=txt_path)
     assert len(chunks) == 3
     csv_chunks = ingest(path=csv_path)
     assert len(csv_chunks) == 3
 
 
-def test_corpus_edge_cases_no_unhandled_exceptions():
+def test_corpus_edge_cases_no_unhandled_exceptions(corpus):
     """
     Verify that across all corpus edge cases (empty, tiny, non-UTF-8, malformed, large),
     no loader raises an unhandled exception. Malformed input logs/skips and never crashes.
@@ -74,7 +291,7 @@ def test_corpus_edge_cases_no_unhandled_exceptions():
     auto_loader = AutoLoader()
 
     for category, loader in loaders.items():
-        cat_dir = os.path.join(CORPUS_ROOT, category)
+        cat_dir = os.path.join(corpus, category)
         assert os.path.exists(cat_dir), f"Corpus directory missing: {cat_dir}"
         files = os.listdir(cat_dir)
         assert len(files) >= 5, f"Expected at least 5 files in {cat_dir}, found {len(files)}"
@@ -88,7 +305,7 @@ def test_corpus_edge_cases_no_unhandled_exceptions():
             assert isinstance(auto_chunks, list)
 
 
-def test_corpus_sane_chunk_bounds_per_file_size():
+def test_corpus_sane_chunk_bounds_per_file_size(corpus):
     """
     Verify that chunk counts fall within a sane min/max bound per file size.
     """
@@ -99,7 +316,7 @@ def test_corpus_sane_chunk_bounds_per_file_size():
     }
 
     for cat, loader in categories.items():
-        cat_dir = os.path.join(CORPUS_ROOT, cat)
+        cat_dir = os.path.join(corpus, cat)
 
         # Empty file -> 0 chunks
         empty_files = [f for f in os.listdir(cat_dir) if f.startswith("empty")]
@@ -126,7 +343,7 @@ def test_corpus_sane_chunk_bounds_per_file_size():
             assert 1000 <= len(chunks) <= 150000, f"Expected 1000-150000 chunks for large file {lf}, got {len(chunks)}"
 
 
-def test_corpus_schema_metadata_matching():
+def test_corpus_schema_metadata_matching(corpus):
     """
     Verify that every chunk produced has non-null source metadata matching the configured schema.
     """
@@ -136,9 +353,9 @@ def test_corpus_schema_metadata_matching():
         CodeLoader(schema=universal_schema),
     ]
     test_files = [
-        os.path.join(CORPUS_ROOT, "text/standard.txt"),
-        os.path.join(CORPUS_ROOT, "structured/standard.jsonl"),
-        os.path.join(CORPUS_ROOT, "code/standard.py"),
+        os.path.join(corpus, "text/standard.txt"),
+        os.path.join(corpus, "structured/standard.jsonl"),
+        os.path.join(corpus, "code/standard.py"),
     ]
 
     for loader, file_path in zip(loaders, test_files):
@@ -151,7 +368,7 @@ def test_corpus_schema_metadata_matching():
             assert chunk.metadata["source_file"] == file_path
 
 
-def test_structural_boundary_preservation():
+def test_structural_boundary_preservation(corpus):
     """
     Verify structural boundaries:
     - StructuredLoader never splits a CSV row or JSON record across chunks.
@@ -159,14 +376,14 @@ def test_structural_boundary_preservation():
     """
     # 1. Structured boundary check
     struct_loader = StructuredLoader()
-    jsonl_path = os.path.join(CORPUS_ROOT, "structured/standard.jsonl")
+    jsonl_path = os.path.join(corpus, "structured/standard.jsonl")
     jsonl_chunks = struct_loader.load(jsonl_path)
     assert len(jsonl_chunks) == 4  # Exactly 4 lines/records
     for idx, c in enumerate(jsonl_chunks):
         assert f"record_id: REC-00{idx+1}" in c.text
         assert "Row " in c.page_or_section or "Record " in c.page_or_section
 
-    csv_path = os.path.join(CORPUS_ROOT, "structured/tiny.csv")
+    csv_path = os.path.join(corpus, "structured/tiny.csv")
     csv_chunks = struct_loader.load(csv_path)
     assert len(csv_chunks) == 1
     assert "metric: operating_margin" in csv_chunks[0].text
@@ -174,7 +391,7 @@ def test_structural_boundary_preservation():
 
     # 2. CodeLoader function/class boundary check
     code_loader = CodeLoader(language="python")
-    code_path = os.path.join(CORPUS_ROOT, "code/standard.py")
+    code_path = os.path.join(corpus, "code/standard.py")
     code_chunks = code_loader.load(code_path)
 
     # Class definition should contain all its methods intact
@@ -187,7 +404,7 @@ def test_structural_boundary_preservation():
     assert '"status": "APPROVED"' in order_proc.text  # Full body retained, never truncated
 
 
-def test_pdf_and_html_formats():
+def test_pdf_and_html_formats(corpus):
     """
     Verify TextLoader format coverage:
     - Clean PDF extracts text layer and schema metadata
@@ -197,13 +414,19 @@ def test_pdf_and_html_formats():
     - Malformed HTML strips malicious scripts and extracts clean content chunks
     Requires pymupdf (fitz) — installed as a CI dep.
     """
+    pytest.importorskip("fitz")
+    pytest.importorskip("PIL")
     auto_loader = AutoLoader(schema=universal_schema)
     from ico_cache.loaders.pdf_loader import PDFLoader
     import tempfile
     import fitz
 
+    clean_pdf_path = os.path.join(corpus, "text/clean.pdf")
+    scanned_pdf_path = os.path.join(corpus, "text/scanned_ocr.pdf")
+    if os.path.getsize(clean_pdf_path) == 0 or os.path.getsize(scanned_pdf_path) == 0:
+        pytest.skip("PDF fixtures unavailable (PyMuPDF/Pillow missing at corpus generation time)")
+
     # 1. Clean PDF
-    clean_pdf_path = os.path.join(CORPUS_ROOT, "text/clean.pdf")
     pdf_chunks = auto_loader.load(clean_pdf_path)
     assert len(pdf_chunks) >= 1
     assert "Apple Inc. (AAPL)" in pdf_chunks[0].text
@@ -211,7 +434,12 @@ def test_pdf_and_html_formats():
     assert pdf_chunks[0].metadata.get("extraction_method") == "text_layer"
 
     # 2. Scanned OCR PDF (image containing text)
-    scanned_pdf_path = os.path.join(CORPUS_ROOT, "text/scanned_ocr.pdf")
+    try:
+        import pdf2image  # noqa: F401
+    except ImportError:
+        pytest.skip("pdf2image not installed (scanned PDF OCR fallback)")
+    if not _tesseract_available():
+        pytest.skip("tesseract binary not available (scanned PDF OCR fallback)")
     scanned_chunks = auto_loader.load(scanned_pdf_path)
     assert len(scanned_chunks) >= 1
     assert "Scanned Document" in scanned_chunks[0].text
@@ -239,7 +467,7 @@ def test_pdf_and_html_formats():
         assert pdf_loader.last_status == "empty_file"
 
     # 5. Malformed HTML (unclosed tags, script injection)
-    html_path = os.path.join(CORPUS_ROOT, "text/malformed.html")
+    html_path = os.path.join(corpus, "text/malformed.html")
     html_chunks = auto_loader.load(html_path)
     assert len(html_chunks) >= 1
     full_html_text = "\n".join(c.text for c in html_chunks)
@@ -249,7 +477,7 @@ def test_pdf_and_html_formats():
     assert "Confidential copyright footer" not in full_html_text
 
 
-def test_multi_language_code_loaders():
+def test_multi_language_code_loaders(corpus):
     """
     Verify tree-sitter code loading across JavaScript and Go:
     - Functions and classes are structurally bounded
@@ -259,7 +487,7 @@ def test_multi_language_code_loaders():
     auto_loader = AutoLoader(schema=universal_schema)
 
     # JavaScript via tree-sitter
-    js_path = os.path.join(CORPUS_ROOT, "code/standard.js")
+    js_path = os.path.join(corpus, "code/standard.js")
     js_chunks = auto_loader.load(js_path)
     assert len(js_chunks) == 3
     js_names = [c.metadata.get("name") for c in js_chunks]
@@ -273,7 +501,7 @@ def test_multi_language_code_loaders():
     assert "approved" in service_chunk.text
 
     # Go via tree-sitter
-    go_path = os.path.join(CORPUS_ROOT, "code/standard.go")
+    go_path = os.path.join(corpus, "code/standard.go")
     go_chunks = auto_loader.load(go_path)
     assert len(go_chunks) == 3
     go_names = [c.metadata.get("name") for c in go_chunks]
@@ -285,14 +513,14 @@ def test_multi_language_code_loaders():
     assert "return (revenue - cost) / revenue" in margin_chunk.text
 
 
-def test_large_scale_malformed_code_fallback():
+def test_large_scale_malformed_code_fallback(corpus):
     """
     Verify that large-scale malformed code (>1MB with scattered syntax errors)
     produces reasonably-sized, non-degenerate chunks via AST fallback
     rather than failing or producing one giant fallback blob.
     """
     code_loader = CodeLoader()
-    large_malformed_path = os.path.join(CORPUS_ROOT, "code/large_malformed.py")
+    large_malformed_path = os.path.join(corpus, "code/large_malformed.py")
     assert os.path.exists(large_malformed_path)
     assert os.path.getsize(large_malformed_path) > 1_000_000
 
@@ -304,26 +532,26 @@ def test_large_scale_malformed_code_fallback():
     assert max(sizes) < 10_000  # No giant fallback blobs
 
 
-def test_structured_loader_row_coalescing():
+def test_structured_loader_row_coalescing(corpus):
     """
     Verify that StructuredLoader coalesces rows into bounded chunks
     (50-100 rows per chunk) for large CSV files while keeping small files 1:1.
     """
     loader = StructuredLoader()
     # 1. Large CSV (>100k rows) coalesces into 50-row chunks
-    large_csv = os.path.join(CORPUS_ROOT, "structured/large.csv")
+    large_csv = os.path.join(corpus, "structured/large.csv")
     large_chunks = loader.load(large_csv)
     assert 1000 <= len(large_chunks) <= 3000
     assert "Rows 1-50" in large_chunks[0].page_or_section
     assert large_chunks[0].metadata["row_count"] == 50
 
     # 2. Small CSV (3 rows) preserves 1 row per chunk
-    small_csv = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../examples/data/products.csv"))
+    small_csv = os.path.join(corpus, "data/products.csv")
     small_chunks = loader.load(small_csv)
     assert len(small_chunks) == 3
 
 
-def test_async_ingestion_job_manager():
+def test_async_ingestion_job_manager(corpus):
     """
     Verify IngestionJobManager threshold dispatch and job status tracking.
     """
@@ -344,14 +572,14 @@ def test_async_ingestion_job_manager():
         mgr = IngestionJobManager(async_threshold_bytes=1000)
 
         # Sync dispatch (< 1000 bytes)
-        small_file = os.path.join(CORPUS_ROOT, "text/standard.txt")
+        small_file = os.path.join(corpus, "text/standard.txt")
         job_sync = mgr.submit_ingest(small_file, "tenant_test", engine)
         assert job_sync.is_async is False
         assert job_sync.status == "completed"
         assert job_sync.chunks_processed == 3
 
         # Async dispatch (> 1000 bytes)
-        code_file = os.path.join(CORPUS_ROOT, "code/standard.py")
+        code_file = os.path.join(corpus, "code/standard.py")
         job_async = mgr.submit_ingest(code_file, "tenant_test", engine)
         assert job_async.is_async is True
         assert job_async.status in ["queued", "processing", "completed"]
@@ -368,24 +596,14 @@ def test_async_ingestion_job_manager():
         assert polled.chunks_processed >= 3
 
 
-def test_cross_type_adversarial_similarity_bounds():
-    """
-    Verify that all rebuilt cross-type adversarial query pairs:
-    - Have 0 metadata conflicts (pass hard_gate)
-    - Fall strictly in the 0.8000 to 0.8499 range
-    - Produce 0% false hits at the 0.850 threshold
-    """
-    import json
-    adv_path = os.path.join(CORPUS_ROOT, "queries/cross_type_adversarial.jsonl")
-    assert os.path.exists(adv_path)
-
-    with open(adv_path) as f:
-        pairs = [json.loads(l) for l in f if l.strip()]
-
-    assert len(pairs) >= 30
-    for p in pairs:
-        sim = p["similarity"]
-        assert 0.8000 <= sim <= 0.8499, f"Pair out of bounds: {p}"
+# NOTE: test_cross_type_adversarial_similarity_bounds was deliberately removed.
+# It validated the deleted curated dataset (examples/test-corpus/queries/
+# cross_type_adversarial.jsonl): 30 hand-tuned pairs whose similarity fell in a
+# tight 0.8000-0.8499 band. That band is a property of the hand-curated pairs,
+# not of the loaders, so it cannot (and should not) be synthesized. The
+# synthetic cross-type evaluation now lives in eval_harness.py (via
+# fixtures_gen.generate_cross_type_adversarial_queries) and still enforces the
+# 0% false-hit regression bar at the 0.850 threshold.
 
 
 def test_ingestion_job_manager_memory_bounds():
@@ -450,5 +668,3 @@ def test_ingestion_job_manager_memory_bounds():
 
     mgr.cleanup_expired_jobs(now=now)
     assert len(mgr.jobs) <= 5
-
-

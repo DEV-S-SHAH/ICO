@@ -13,8 +13,10 @@ class RedisStore(BaseExactStore):
     def get(self, key: str) -> Optional[bytes]:
         return self.r.get(key)
 
-    def set(self, key: str, value: bytes, ex: Optional[int] = None):
-        self.r.set(key, value, ex=ex)
+    def set(self, key: str, value: bytes, ex: Optional[int] = None, nx: bool = False) -> bool:
+        # nx=True only writes when the key is absent (conditional write).
+        result = self.r.set(key, value, ex=ex, nx=nx)
+        return result is not None
 
     def delete(self, key: str) -> bool:
         return bool(self.r.delete(key))

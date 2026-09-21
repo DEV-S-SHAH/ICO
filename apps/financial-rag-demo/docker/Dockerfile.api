@@ -1,9 +1,32 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+
+ENV PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Committed, curated demo dependency set (CI/release use it too; the root
+# requirements.txt is gitignored and must not be relied upon at build time).
+COPY apps/financial-rag-demo/requirements-demo.txt apps/financial-rag-demo/requirements-demo.txt
+RUN pip install -r apps/financial-rag-demo/requirements-demo.txt
+
+# Core library, then application source.
 COPY packages/ico-cache-py packages/ico-cache-py
 RUN pip install -e packages/ico-cache-py
+
 COPY apps/financial-rag-demo/api apps/financial-rag-demo/api
-COPY examples/sec-filings-corpus/datasets examples/sec-filings-corpus/datasets
-CMD ["uvicorn", "apps.financial-rag-demo.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+COPY examples/financial_schema.py examples/financial_schema.py
+
+# Run as an unprivileged user. The ingest root must exist and be writable by it.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/data/ingest/uploads \
+    && chown -R appuser:appuser /app /home/appuser
+ENV HOME=/home/appuser
+USER appuser
+
+# The app lives under apps/financial-rag-demo. Expose `api` via --app-dir so we
+# don't depend on the container cwd being on sys.path, and set PYTHONPATH=/app so
+# `examples.financial_schema` stays importable at runtime.
+CMD ["uvicorn", "api.main:app", "--app-dir", "apps/financial-rag-demo", "--host", "0.0.0.0", "--port", "8000"]

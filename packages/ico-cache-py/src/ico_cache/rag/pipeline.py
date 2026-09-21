@@ -1,7 +1,10 @@
+import asyncio
+import functools
 import time
 from typing import Any, List, Optional
 import litellm
 from ..backends.base import BaseEmbedder, BaseVectorStore
+from ..telemetry.metrics import record_generation
 from ..telemetry.tracing import trace_rag_fallback
 
 
@@ -9,6 +12,13 @@ def validate_model_spec(model: str) -> None:
     """Validates that model string is non-empty and well-formed for litellm."""
     if not model or not isinstance(model, str) or not model.strip():
         raise ValueError("LLM model string must be a non-empty string.")
+
+
+async def _run_sync(fn, *args, **kwargs):
+    """Run a blocking callable in a worker thread so it never blocks the loop."""
+    if kwargs:
+        fn = functools.partial(fn, **kwargs)
+    return await asyncio.to_thread(fn, *args)
 
 
 class RAGPipeline:
@@ -21,9 +31,12 @@ class RAGPipeline:
         unfiltered_threshold: float = 0.10,
         collection_name: str = "rag_corpus",
         reranker: Any = None,
-        model: str = "ollama/qwen2.5:3b",
+        model: str = "gemini/gemini-flash-latest",
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        timeout: float = 60.0,
+        num_retries: int = 3,
+        langfuse: Any = None,
     ):
         validate_model_spec(model)
         self.dense_embedder = dense_embedder
@@ -37,13 +50,16 @@ class RAGPipeline:
         self.model = model
         self.api_base = api_base
         self.api_key = api_key
+        self.timeout = timeout
+        self.num_retries = num_retries
+        self.langfuse = langfuse
 
     def _has_active_filters(self, meta: dict) -> bool:
         return any(k in meta for k in self.metadata_filter_keys)
 
     async def retrieve(self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", top_k: int = 30, **kwargs) -> List[dict]:
         meta = meta or {}
-        dense_vec = self.dense_embedder.embed(query)
+        dense_vec = await _run_sync(self.dense_embedder.embed, query)
 
         # Build filter
         from qdrant_client.http import models
@@ -91,7 +107,7 @@ class RAGPipeline:
 
             if self.reranker:
                 pairs = [[query, p.get("text", "")] for p in retrieved_payloads]
-                scores = self.reranker.predict(pairs)
+                scores = await _run_sync(self.reranker.predict, pairs)
                 ranked = sorted(zip(scores, retrieved_payloads), key=lambda x: x[0], reverse=True)
                 best_score = ranked[0][0]
                 top_chunks = ranked[:3]
@@ -133,21 +149,36 @@ Answer:"""
             if llm_generate_fn:
                 ans = llm_generate_fn(prompt)
             else:
-                try:
-                    call_kwargs = {}
-                    if self.api_base:
-                        call_kwargs["api_base"] = self.api_base
-                    if self.api_key:
-                        call_kwargs["api_key"] = self.api_key
-                    resp = litellm.completion(
+                call_kwargs = {}
+                if self.api_base:
+                    call_kwargs["api_base"] = self.api_base
+                if self.api_key:
+                    call_kwargs["api_key"] = self.api_key
+
+                async def _invoke_llm():
+                    resp = await _run_sync(
+                        litellm.completion,
                         model=target_model,
                         messages=[{"role": "user", "content": prompt}],
-                        **call_kwargs
+                        timeout=self.timeout,
+                        num_retries=self.num_retries,
+                        **call_kwargs,
                     )
-                    ans = resp.choices[0].message.content.strip()
+                    return resp.choices[0].message.content.strip()
+
+                try:
+                    if self.langfuse is not None:
+                        with self.langfuse.generation(
+                            name="rag-answer", model=target_model, prompt=prompt
+                        ) as generation:
+                            ans = await _invoke_llm()
+                            generation.update(output=ans)
+                    else:
+                        ans = await _invoke_llm()
                 except Exception as e:
                     ans = f"LLM generation failed: {e}"
             t_gen = time.time() - t1
+            record_generation(t_gen)
 
             fb.record_completion(citations_count=len(citations), score=best_score)
             return ans, t_ret, t_gen, best_score, citations

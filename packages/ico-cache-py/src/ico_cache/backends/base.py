@@ -39,7 +39,7 @@ class BaseExactStore(ABC):
         pass
 
     @abstractmethod
-    def set(self, key: str, value: bytes, ex: Optional[int] = None):
+    def set(self, key: str, value: bytes, ex: Optional[int] = None, nx: bool = False):
         pass
 
     def delete_prefix(self, prefix: str) -> int:

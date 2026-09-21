@@ -21,10 +21,15 @@ class SQLiteStore(BaseExactStore):
                 return row[0]
             return None
 
-    def set(self, key: str, value: bytes, ex: Optional[int] = None):
-        # Note: SQLite store doesn't support TTL out of the box in this simple implementation
+    def set(self, key: str, value: bytes, ex: Optional[int] = None, nx: bool = False) -> bool:
+        # Note: SQLite store doesn't support TTL out of the box in this simple
+        # implementation. nx=True performs a conditional (insert-if-absent) write.
+        verb = "INSERT OR IGNORE" if nx else "INSERT OR REPLACE"
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)", (key, value))
+            cur = conn.execute(f"{verb} INTO cache (key, value) VALUES (?, ?)", (key, value))
+            if nx:
+                return cur.rowcount > 0
+            return True
 
     def delete(self, key: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:

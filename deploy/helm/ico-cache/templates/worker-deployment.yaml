@@ -1,4 +1,6 @@
 {{- if .Values.worker.enabled }}
+{{- $podSecurityContext := .Values.worker.podSecurityContext | default .Values.podSecurityContext }}
+{{- $containerSecurityContext := .Values.worker.containerSecurityContext | default .Values.containerSecurityContext }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,18 +19,71 @@ spec:
       labels:
         {{- include "ico-cache.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
+      {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" $podSecurityContext) | nindent 6 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: worker
-          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          image: {{ include "ico-cache.image" .Values.worker.image | quote }}
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $containerSecurityContext | nindent 12 }}
           command:
             {{- toYaml .Values.worker.command | nindent 12 }}
+          {{- if .Values.worker.health.enabled }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.worker.health.port }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "ico-cache.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "ico-cache.fullname" .)) }}
+                name: {{ include "ico-cache.secretName" . }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/appuser/.cache
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
 {{- end }}
