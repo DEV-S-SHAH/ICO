@@ -2,42 +2,42 @@
 # All packages required by apps/financial-rag-demo/api/ and ui/
 
 # FastAPI stack
-fastapi>=0.110.0
-uvicorn>=0.28.0
-python-multipart>=0.0.9
-httpx>=0.27.0
+fastapi>=0.141.1
+uvicorn>=0.53.0
+python-multipart>=0.0.32
+httpx>=0.28.1
 
 # Rate limiting
-slowapi>=0.1.9
+slowapi>=0.1.10
 
 # Settings
-pydantic>=2.6.0
-pydantic-settings>=2.2.0
+pydantic>=2.13.5
+pydantic-settings>=2.15.0
 
 # LLM (Google Gemini via LiteLLM)
-litellm>=1.40.0
+litellm>=1.101.0
 
 # UI
-streamlit>=1.35.0
-requests>=2.32.0
+streamlit>=1.64.0
+requests>=2.34.2
 
 # Observability
-langfuse>=2.0.0
-prometheus-client>=0.20.0
-opentelemetry-api>=1.20.0
-opentelemetry-sdk>=1.20.0
-opentelemetry-exporter-otlp-proto-http>=1.20.0
-structlog>=24.1.0
+langfuse>=4.15.4
+prometheus-client>=0.26.0
+opentelemetry-api>=1.44.0
+opentelemetry-sdk>=1.44.0
+opentelemetry-exporter-otlp-proto-http>=1.44.0
+structlog>=26.1.0
 
 # Universal document loaders (PDF/HTML/ODF/Office/images/OCR)
-pypdf>=3.0.0
-pdf2image>=1.16.0
-pytesseract>=0.3.10
-Pillow>=10.0.0
+pypdf>=6.19.0
+pdf2image>=1.17.0
+pytesseract>=0.3.13
+Pillow>=12.3.0
 odfpy>=1.4.1
-python-docx>=1.1.0
-openpyxl>=3.1.0
-python-pptx>=0.6.23
+python-docx>=1.2.0
+openpyxl>=3.1.5
+python-pptx>=1.0.2
 
 # Vector / exact stores (demo uses both backends)
-lancedb>=0.5.0
+lancedb>=0.38.0
