@@ -144,15 +144,32 @@ def generate_50_queries() -> List[Dict[str, str]]:
     return queries[:50]
 
 
+def _invoke_gemini_with_retry(prompt: str, max_retries: int = 6) -> str:
+    """Call Google Gemini API with exponential backoff on 429 quota throttle."""
+    delay = 3.0
+    for attempt in range(max_retries):
+        try:
+            resp = _gemini_model.generate_content(prompt)
+            return resp.text.strip()
+        except Exception as e:
+            err_str = str(e)
+            if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+
+
 def run_single_rag(
     question: str,
     cache_layer: Optional[IntelligentCache] = None,
-    mock_llm_if_rate_limited: bool = True,
 ) -> Dict:
-    """Execute RAG pipeline with or without cache."""
+    """Execute RAG pipeline with high-precision question-scoped caching."""
     # 1. Retrieve
     docs = retriever.retrieve(question, top_k=2)
+    doc_ids = ",".join(sorted([d["doc_id"] for d in docs]))
     context_str = "\n\n".join([f"[{d['source_type'].upper()} - {d['title']}]: {d['content']}" for d in docs])
+    
     prompt = (
         "Answer the question concisely using the provided context.\n\n"
         f"Context:\n{context_str}\n\n"
@@ -164,8 +181,12 @@ def run_single_rag(
     hit_type = "NONE"
     prompt_tokens = _estimate_tokens(prompt)
 
+    # Scoped namespace ensures cache matches questions within the same retrieved context
+    namespace = f"rag:{doc_ids}"
+
     if cache_layer is not None:
-        cache_res = cache_layer.get(prompt, threshold=0.75)
+        # High precision threshold 0.88 on the QUESTION intent rather than document context
+        cache_res = cache_layer.get(question.strip().lower(), namespace=namespace, threshold=0.88)
         if cache_res is not None:
             latency = (time.perf_counter() - t0) * 1000.0
             hit_type = "EXACT" if cache_res.hit_type == CacheHitType.EXACT else "SEMANTIC"
@@ -181,24 +202,19 @@ def run_single_rag(
                 "hit_type": hit_type,
             }
 
-    # If no cache or cache miss, call Gemini
-    try:
-        resp = _gemini_model.generate_content(prompt)
-        ans = resp.text.strip()
-    except Exception as e:
-        # Fallback simulation to complete the 50 queries if free tier quota window is hit
-        ans = f"[Synthesized RAG Response from {docs[0]['title']}]: {docs[0]['content'][:150]}..."
-        time.sleep(0.05)
+    # 2. If no cache or cache miss, invoke Gemini with exponential backoff
+    ans = _invoke_gemini_with_retry(prompt)
 
     latency = (time.perf_counter() - t0) * 1000.0
     comp_tokens = _estimate_tokens(ans)
     cost = (prompt_tokens / 1000.0 * COST_PER_1K_PROMPT) + (comp_tokens / 1000.0 * COST_PER_1K_COMPLETION)
 
-    # Store in cache
+    # 3. Store genuine response in cache using the question key and doc namespace
     if cache_layer is not None:
         cache_layer.set(
-            query=prompt,
+            query=question.strip().lower(),
             value=ans,
+            namespace=namespace,
             ttl=3600,
             latency_ms=latency,
             prompt_tokens=prompt_tokens,
@@ -250,7 +266,7 @@ def run_50_queries_benchmark():
     print(">>> RUNNING 50 QUERIES WITH INTELLIGENT CACHE (Exact + Semantic Layer)...")
     print("-" * 85)
     cache_inst = IntelligentCache(
-        similarity_threshold=0.75,
+        similarity_threshold=0.88,
         default_ttl=3600,
         cost_per_1k_prompt_tokens=COST_PER_1K_PROMPT,
         cost_per_1k_completion_tokens=COST_PER_1K_COMPLETION,

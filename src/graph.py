@@ -18,9 +18,9 @@ GEMINI_API_KEY = os.environ.get(
 genai.configure(api_key=GEMINI_API_KEY)
 _gemini_model = genai.GenerativeModel("gemini-3.1-flash-lite")
 
-# Global IntelligentCache instance
+# Global IntelligentCache instance with high-precision threshold
 intelligent_cache_instance = IntelligentCache(
-    similarity_threshold=0.75,
+    similarity_threshold=0.88,
     default_ttl=3600,
     namespace="langgraph_rag",
 )
@@ -39,16 +39,6 @@ def _invoke_gemini_with_retry(prompt: str, max_retries: int = 5) -> str:
                 delay *= 2
                 continue
             raise
-
-@cache(cache_instance=intelligent_cache_instance, ttl=3600, similarity_threshold=0.75)
-def cached_llm_generate(prompt: str) -> str:
-    """Call Google Gemini model with intelligent exact + semantic caching."""
-    return _invoke_gemini_with_retry(prompt)
-
-
-def direct_llm_generate(prompt: str) -> str:
-    """Call Google Gemini model directly without any caching layer."""
-    return _invoke_gemini_with_retry(prompt)
 
 
 # Define LangGraph State
@@ -73,11 +63,13 @@ def retrieve_node(state: RAGState) -> Dict:
 
 
 def generate_node(state: RAGState) -> Dict:
-    """Node 2: Synthesize answer using context and Gemini LLM."""
+    """Node 2: Synthesize answer using context and Gemini LLM with high-precision caching."""
     question = state["question"]
     docs = state.get("documents", [])
     use_cache = state.get("use_cache", True)
 
+    doc_ids = ",".join(sorted([d.get("doc_id", d.get("title", "")) for d in docs]))
+    namespace = f"langgraph_rag:{doc_ids}"
     context_str = "\n\n".join([f"[{d['title']}]: {d['content']}" for d in docs])
     prompt = (
         "You are a helpful AI assistant. Answer the user's question concisely based on the provided context.\n\n"
@@ -87,19 +79,29 @@ def generate_node(state: RAGState) -> Dict:
     )
 
     t0 = time.perf_counter()
+    is_hit = False
+
     if use_cache:
-        # Check cache hit stats before call
-        stats_before = intelligent_cache_instance.stats()
-        hits_before = stats_before.total_hits
-        
-        answer = cached_llm_generate(prompt)
-        
-        stats_after = intelligent_cache_instance.stats()
-        hits_after = stats_after.total_hits
-        is_hit = hits_after > hits_before
+        # Check cache scoped to the specific document context using 0.88 threshold
+        hit = intelligent_cache_instance.get(
+            query=question.strip().lower(),
+            namespace=namespace,
+            threshold=0.88,
+        )
+        if hit is not None:
+            answer = hit.value
+            is_hit = True
+        else:
+            answer = _invoke_gemini_with_retry(prompt)
+            intelligent_cache_instance.set(
+                query=question.strip().lower(),
+                value=answer,
+                namespace=namespace,
+                ttl=3600,
+                apply_policy=False,
+            )
     else:
-        answer = direct_llm_generate(prompt)
-        is_hit = False
+        answer = _invoke_gemini_with_retry(prompt)
 
     latency = (time.perf_counter() - t0) * 1000.0
 

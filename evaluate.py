@@ -87,7 +87,7 @@ def run_evaluation_suite():
 
     for tc in EVAL_TEST_CASES:
         query = tc["query"]
-        docs = retriever.retrieve(query, top_k=2)
+        docs = retriever.retrieve(query, top_k=3)
         contexts = [d["content"] for d in docs]
 
         eval_res = evaluator.evaluate_pair(

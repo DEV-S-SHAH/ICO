@@ -20,17 +20,25 @@ class ComplexRetriever:
             self.documents = json.load(f)
 
     def retrieve(self, query: str, top_k: int = 2) -> List[Dict[str, str]]:
-        q_tokens = [t.lower() for t in query.split() if len(t) > 2]
+        q_tokens = [t.lower().strip(",.?!:;()[]") for t in query.split() if len(t) > 2]
         scored_docs = []
 
         for doc in self.documents:
-            text = (doc["title"] + " " + doc["content"]).lower()
-            score = 0
+            content_lower = doc["content"].lower()
+            title_lower = doc["title"].lower()
+            score = 0.0
+
             for t in q_tokens:
-                if t in doc["title"].lower():
-                    score += 5.0
-                if t in text:
-                    score += 1.0
+                # Content match with frequency weighting
+                cnt = content_lower.count(t)
+                if cnt > 0:
+                    # Specialized keywords receive higher weighting than generic terms
+                    weight = 1.0 if t in ("paper", "what", "how", "the") else 3.0
+                    score += weight * min(cnt, 5)
+                
+                # Title exact match
+                if t in title_lower:
+                    score += 2.0
 
             scored_docs.append((score, doc))
 
