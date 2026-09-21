@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector payloads are JSON-encoded on write and decoded on read (LanceDB), replacing the lossy `str()` / `replace("'", '"')` round-trip.
 - Test suite: real `conftest.py` with service-free fixtures, `asyncio_mode = "auto"`, a working single-flight stampede test, and unit tests for `resolve`.
 
+## [1.0.3] - 2026-09-21
+
+### Changed
+- **Cross-Platform OS Compatibility**: Fully verified and hardened for Linux, Windows, and macOS.
+  - Safe POSIX / Windows signal registration in `ico_cache.invalidation` worker.
+  - Safe Windows file-locking handling for temporary test files (`tempfile.NamedTemporaryFile`).
+  - Added OS classifiers (`OS Independent`, `POSIX :: Linux`, `Microsoft :: Windows`, `MacOS`) to `pyproject.toml`.
+  - Bumped version to `1.0.3` across `ico-cache-py` and `ico-cache-js`.
+
+## [1.0.2] - 2026-09-21
+
+### Changed
+- **PyPI and npm Metadata Correction**: Updated package metadata description, documentation links, repository URLs, and project homepage across PyPI and npm.
+
 ## [1.0.1] - 2026-09-21
 
 ### Security

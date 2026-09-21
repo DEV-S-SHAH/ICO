@@ -208,8 +208,16 @@ def main() -> int:
         logger.info("received signal %s; shutting down", signum)
         worker.stop()
 
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGTERM"):
+        try:
+            signal.signal(signal.SIGTERM, _handle_signal)
+        except (ValueError, OSError):
+            pass
+    if hasattr(signal, "SIGINT"):
+        try:
+            signal.signal(signal.SIGINT, _handle_signal)
+        except (ValueError, OSError):
+            pass
 
     logger.info("invalidation worker starting")
     try:

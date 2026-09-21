@@ -447,24 +447,34 @@ def test_pdf_and_html_formats(corpus):
 
     # 3. Blank image PDF (image with no text)
     pdf_loader = PDFLoader()
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_blank:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_blank:
+        tmp_blank_name = tmp_blank.name
+    try:
         doc = fitz.open()
         page = doc.new_page(width=300, height=300)
         pix = fitz.Pixmap(fitz.csRGB, (0, 0, 300, 300), False)
         pix.clear_with(255)
         page.insert_image(fitz.Rect(0, 0, 300, 300), pixmap=pix)
-        doc.save(tmp_blank.name)
+        doc.save(tmp_blank_name)
         doc.close()
 
-        blank_chunks = pdf_loader.load(tmp_blank.name)
+        blank_chunks = pdf_loader.load(tmp_blank_name)
         assert len(blank_chunks) == 0
         assert pdf_loader.last_status == "image_only_no_text"
+    finally:
+        if os.path.exists(tmp_blank_name):
+            os.remove(tmp_blank_name)
 
     # 4. Zero-byte PDF
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_empty:
-        empty_chunks = pdf_loader.load(tmp_empty.name)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_empty:
+        tmp_empty_name = tmp_empty.name
+    try:
+        empty_chunks = pdf_loader.load(tmp_empty_name)
         assert len(empty_chunks) == 0
         assert pdf_loader.last_status == "empty_file"
+    finally:
+        if os.path.exists(tmp_empty_name):
+            os.remove(tmp_empty_name)
 
     # 5. Malformed HTML (unclosed tags, script injection)
     html_path = os.path.join(corpus, "text/malformed.html")
