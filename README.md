@@ -10,11 +10,15 @@ ICO-Cache is a high-performance, cross-platform semantic caching middleware desi
 
 It is available as both a Python library ([`ico-cache`](https://pypi.org/project/ico-cache/)) and a TypeScript/JavaScript SDK (`ico-cache-js`).
 
+```bash
+pip install ico-cache
+```
+
 ---
 
 ## Why ICO-Cache?
 
-| Metric | Without Cache | With ICO-Cache |
+| Metric | Without Cache | With ICO-Cache (`pip install ico-cache`) |
 | :--- | :--- | :--- |
 | **API Token Cost** | 100% cost on every repeated/reworded prompt | **Drastically reduced** via L1 exact & L2/L3 semantic hits |
 | **Response Latency** | Seconds (2,000ms – 10,000ms+) | **Sub-millisecond** (L1) or **15–30ms** (L2/L3) |
@@ -23,7 +27,7 @@ It is available as both a Python library ([`ico-cache`](https://pypi.org/project
 
 > **Reference Demo:** `apps/financial-rag-demo` provides a reference implementation running against SEC filings with FastAPI + Streamlit to illustrate real-world usage.
 
-For an exhaustive architectural deep-dive, see the [Architecture Documentation](docs/ARCHITECTURE.md).
+For full setup options, see [Installation & Extras](#installation) or the [Architecture Documentation](docs/ARCHITECTURE.md).
 
 ---
 
