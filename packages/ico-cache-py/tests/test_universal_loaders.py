@@ -113,14 +113,11 @@ def test_corpus_sane_chunk_bounds_per_file_size():
             chunks = loader.load(os.path.join(cat_dir, tf))
             assert len(chunks) == 1, f"Expected 1 chunk for tiny file {tf}, got {len(chunks)}"
 
-        # Standard file -> bounded between 1/2 and 20 chunks
-        # Note: CodeLoader uses AST for Python; non-Python files (JS/TS/Go etc.)
-        # fall back to block parsing which may produce as few as 1 chunk.
+        # Standard file -> bounded between 2 and 20 chunks
         std_files = [f for f in os.listdir(cat_dir) if f.startswith("standard")]
-        min_chunks = 1 if cat == "code" else 2
         for sf in std_files:
             chunks = loader.load(os.path.join(cat_dir, sf))
-            assert min_chunks <= len(chunks) <= 20, f"Expected {min_chunks}-20 chunks for standard file {sf}, got {len(chunks)}"
+            assert 2 <= len(chunks) <= 20, f"Expected 2-20 chunks for standard file {sf}, got {len(chunks)}"
 
         # Large file (>10MB) -> bounded between 1,000 and 150,000 chunks
         large_files = [f for f in os.listdir(cat_dir) if f.startswith("large.")]
@@ -198,9 +195,8 @@ def test_pdf_and_html_formats():
     - Blank image PDF returns 0 chunks with explicit status 'image_only_no_text'
     - Zero-byte PDF returns 0 chunks with explicit status 'empty_file'
     - Malformed HTML strips malicious scripts and extracts clean content chunks
-    Requires: pymupdf (fitz) for PDF generation in the test fixture
+    Requires pymupdf (fitz) — installed as a CI dep.
     """
-    pytest.importorskip("fitz", reason="pymupdf (fitz) not installed")
     auto_loader = AutoLoader(schema=universal_schema)
     from ico_cache.loaders.pdf_loader import PDFLoader
     import tempfile
@@ -258,10 +254,8 @@ def test_multi_language_code_loaders():
     Verify tree-sitter code loading across JavaScript and Go:
     - Functions and classes are structurally bounded
     - Never split across chunks
-    Requires: tree_sitter_javascript and tree_sitter_go (optional deps)
+    Requires tree-sitter-javascript and tree-sitter-go (installed as CI deps).
     """
-    pytest.importorskip("tree_sitter_javascript", reason="tree-sitter-javascript not installed")
-    pytest.importorskip("tree_sitter_go", reason="tree-sitter-go not installed")
     auto_loader = AutoLoader(schema=universal_schema)
 
     # JavaScript via tree-sitter
