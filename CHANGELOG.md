@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Removed
-- **Vendored dependencies and tooling config**: `packages/ico-cache-js/node_modules/` (TypeScript compiler) is no longer committed (gitignored); GitNexus agent scaffolding (`.agents/`, `.claude/`) and its root docs (`AGENTS.md`/`CLAUDE.md` gitnexus block) removed; `test_concurrency.py` scratch load-test removed. `AGENTS.md` now documents the project itself; the Graph-RAG build prompt is tool-agnostic.
+- **Vendored dependencies and tooling config**: `packages/ico-cache-js/node_modules/` (TypeScript compiler) is no longer committed (gitignored); GitNexus agent scaffolding (`.agents/`, `.claude/`) and its root docs (`AGENTS.md`/`CLAUDE.md` gitnexus block) removed; `test_concurrency.py` scratch load-test removed. `AGENTS.md` now documents the project itself.
+- **Dead/unreferenced files**: `docs/BUILD_GRAPH_RAG_TERMINAL_PROMPT.md` (agent build prompt), `PRODUCTION_CHECKLIST.md`, `langfuse-compose-example.yml`, and `apps/financial-rag-demo/ui/scripted_journey.json` (no references anywhere in the repo).
 
 ### Changed
 - **Default LLM is now Google Gemini** (`gemini/gemini-flash-latest` via LiteLLM). Configure with `GEMINI_API_KEY` and `LLM_MODEL`; `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` control timeouts and retries. Ollama is no longer required or shipped as the default.

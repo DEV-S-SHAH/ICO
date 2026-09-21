@@ -1,8 +1,8 @@
 # ICO-Cache — Development Guide
 
 Dataset-free semantic cache for LLM applications: L1 (exact), L2 (vector), L3 (RAG);
-async ingestion, multi-tenancy, observability, universal document loaders, and a
-Graph-RAG build prompt in `docs/`. No datasets are bundled — ingest your own documents.
+async ingestion, multi-tenancy, observability, and universal document loaders. No
+datasets are bundled — ingest your own documents.
 
 ## Repository Layout
 
@@ -16,7 +16,7 @@ Graph-RAG build prompt in `docs/`. No datasets are bundled — ingest your own d
 | `scripts/` | Release gates: version sync, changelog, dry-run. |
 | `benchmark.py` | 5-dataset benchmark harness; JSON reports to `benchmark-reports/`. |
 | `audit.py` | `deps` (pip-audit) / `sast` (bandit) / `static` (ruff+mypy) / `ast` / `secrets`; reports to `audit-reports/`. |
-| `docs/` | Architecture and the Graph-RAG build prompt. |
+| `docs/` | Architecture documentation. |
 
 ## Commands
 
