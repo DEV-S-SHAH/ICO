@@ -80,3 +80,6 @@ test_specific.py
 test_tgt.py
 test_wmt*.py
 verify_all_5.py
+packages/ico-cache-py/dist/
+packages/ico-cache-py/src/ico_cache.egg-info/
+*.egg-info/
