@@ -28,7 +28,7 @@ jobs:
         ports:
           - 6333:6333
         options: >-
-          --health-cmd "wget -qO- http://localhost:6333/healthz || exit 1"
+          --health-cmd "wget -qO- http://localhost:6333/ || exit 1"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12
@@ -42,13 +42,13 @@ jobs:
         run: |
           echo "Waiting for Qdrant on port 6333..."
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then
-              echo "Qdrant is ready after ${i} seconds"
+            if curl -sf http://localhost:6333/ > /dev/null 2>&1; then
+              echo "Qdrant is ready after $((i*2)) seconds"
               break
             fi
             sleep 2
           done
-          curl -sf http://localhost:6333/healthz || (echo "ERROR: Qdrant not ready after 60s" && exit 1)
+          curl -sf http://localhost:6333/ || (echo "ERROR: Qdrant not ready after 60s" && exit 1)
 
       - name: Set up Python 3.9
         uses: actions/setup-python@v5
