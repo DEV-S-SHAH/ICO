@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, START, END
 
 from intelligent_cache import IntelligentCache
 from intelligent_cache.core.decorator import cache
-from retriever import SimpleVectorRetriever
+from src.retriever import ComplexRetriever
 
 # Configure Google Gemini
 GEMINI_API_KEY = os.environ.get(
@@ -62,7 +62,7 @@ class RAGState(TypedDict):
 
 
 # Initialize retriever
-_retriever = SimpleVectorRetriever()
+_retriever = ComplexRetriever()
 
 
 def retrieve_node(state: RAGState) -> Dict:

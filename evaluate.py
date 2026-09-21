@@ -1,9 +1,9 @@
 """Execute full response quality and fidelity evaluation comparing With vs Without Cache."""
 
 import json
-from rag_evaluator import RAGEvaluator
-from complex_retriever import ComplexRetriever
-from response_diff import format_side_by_side_diff
+from src.evaluator import RAGEvaluator
+from src.retriever import ComplexRetriever
+from src.diff import format_side_by_side_diff
 
 retriever = ComplexRetriever()
 evaluator = RAGEvaluator()

@@ -10,7 +10,7 @@ from langgraph.graph import StateGraph, START, END
 
 from intelligent_cache import IntelligentCache
 from intelligent_cache.core.entry import CacheHitType
-from complex_retriever import ComplexRetriever
+from src.retriever import ComplexRetriever
 
 # 1. API Pricing Configuration
 # Gemini 3.1 Flash Lite / 2.5 Flash pricing:
@@ -301,7 +301,7 @@ def run_50_queries_benchmark():
     print(f"  - Cold Misses (New Topics): {misses}")
 
     # SAMPLE RESPONSES CHECK & DIFF ANALYSIS
-    from response_diff import compare_responses, format_side_by_side_diff
+    from src.diff import compare_responses, format_side_by_side_diff
 
     print("\n" + "=" * 85)
     print("  RESPONSE DIFFERENCE & QUALITY ANALYSIS (With vs Without Cache)")
