@@ -345,18 +345,18 @@ def run_50_queries_benchmark():
         rec = {
             "query_id": idx + 1,
             "category": q_item["type"],
-            "query": q_item["query"],
-            "response_without_cache": r_no["answer"],
-            "latency_no_cache_ms": round(r_no["latency_ms"], 2),
-            "cost_no_cache_usd": round(r_no["cost_usd"], 6),
-            "response_with_cache": r_with["answer"],
+            "query": q_item["query"].strip(),
+            "response_without_cache": " ".join(r_no["answer"].split()),
+            "latency_no_cache_ms": f"{r_no['latency_ms']:.1f}",
+            "cost_no_cache_usd": f"{r_no['cost_usd']:.6f}",
+            "response_with_cache": " ".join(r_with["answer"].split()),
             "hit_type": r_with["hit_type"],
-            "latency_with_cache_ms": round(r_with["latency_ms"], 2),
-            "cost_with_cache_usd": round(r_with["cost_usd"], 6),
-            "speedup_ratio": round(r_no["latency_ms"] / max(r_with["latency_ms"], 0.001), 1),
+            "latency_with_cache_ms": f"{r_with['latency_ms']:.2f}",
+            "cost_with_cache_usd": f"{r_with['cost_usd']:.6f}",
+            "speedup_ratio": f"{round(r_no['latency_ms'] / max(r_with['latency_ms'], 0.001), 1):.1f}x",
             "is_exact_match": diff_info["is_exact_match"],
-            "sequence_similarity": diff_info["sequence_similarity"],
-            "word_overlap_jaccard": diff_info["jaccard_similarity"],
+            "sequence_similarity": f"{diff_info['sequence_similarity'] * 100:.1f}%",
+            "word_overlap_jaccard": f"{diff_info['jaccard_similarity'] * 100:.1f}%",
         }
         records.append(rec)
 
@@ -364,7 +364,8 @@ def run_50_queries_benchmark():
         json.dump(records, f, indent=2)
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(records[0].keys()))
+        import csv
+        writer = csv.DictWriter(f, fieldnames=list(records[0].keys()), quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(records)
 

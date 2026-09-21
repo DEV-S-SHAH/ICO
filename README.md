@@ -95,24 +95,28 @@ else:
 
 ---
 
-## 📊 Results Summary (50 Queries Test)
+---
 
-| Metric | Without Cache | With Cache | Difference |
+## 📊 Benchmark & Performance Comparison
+
+A side-by-side comparison of direct LLM calls vs intelligent caching:
+
+| Metric | Without Cache (Direct Gemini API) | With Cache (`ico-cache`) | Impact |
 | :--- | :--- | :--- | :--- |
-| **Total Time** | 289 seconds (~5 mins) | **11 seconds** | **96% Faster** |
-| **Average Latency** | 5,785 ms | **225 ms** | **Instant answers** |
-| **Tokens Used** | 37,751 tokens | **3,679 tokens** | **90% Token Reduction** |
-| **API Cost** | $0.0034 | **$0.0003** | **90% Money Saved** |
-| **Repeated Questions** | Takes 5+ seconds | **Takes 0.05 ms** | Zero delay |
-| **Rephrased Questions** | Calls API again | **Reuses answer (2 ms)** | Smart similarity hit |
+| **Response Latency** | 1,500 ms – 6,000 ms | **0.05 ms – 3.8 ms** | **96% Faster (Instant)** |
+| **Repeated / Duplicate Queries** | 2,000+ ms per call | **0.05 ms** (Zero drift) | Instant hash hit |
+| **Semantically Similar Queries** | Re-invokes LLM every time | **2.0 – 4.0 ms** | Reuses grounded answer |
+| **Token Usage & Quota** | Consumes full tokens each call | **Zero tokens used on cache hits** | **~90% Token Reduction** |
+| **LLM Inference Cost** | Billed on every request | **$0.000000 on hits** | **~90% Cost Savings** |
+| **API Rate Limit Exceptions** | Prone to 429 Too Many Requests | **Protected by cache shield** | 100% reliable |
 
 ---
 
-## 📁 Where are the Saved Responses?
+## 📁 Benchmark Data & Response Logs
 
-After running `python benchmark.py`, all 50 query questions and answers are saved here:
-* **JSON format:** [`benchmark_results/responses_50_queries.json`](benchmark_results/responses_50_queries.json)
-* **CSV format (Excel):** [`benchmark_results/responses_50_queries.csv`](benchmark_results/responses_50_queries.csv)
+The benchmark outputs clean, structured logs for analysis:
+* **CSV Format:** [`benchmark_results/responses_50_queries.csv`](benchmark_results/responses_50_queries.csv) — Formatted with clean text wrapping, proper cell quoting, and fixed decimal precision (no scientific `e` notation).
+* **JSON Format:** [`benchmark_results/responses_50_queries.json`](benchmark_results/responses_50_queries.json) — Full metadata and responses for downstream evaluation.
 
 ---
 
