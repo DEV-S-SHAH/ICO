@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ico-cache"
-version = "1.0.1"
+version = "1.0.2"
 description = "Semantic caching middleware for LLM applications: 3-tier (exact/semantic/context-aware) cache that cuts API token cost and latency by not re-running repeated prompts through the model"
 authors = [{name = "Dev"}]
 readme = "README.md"
 requires-python = ">=3.11"
+urls = {Homepage = "https://github.com/DEV-S-SHAH/ICO", Repository = "https://github.com/DEV-S-SHAH/ICO", Documentation = "https://github.com/DEV-S-SHAH/ICO/blob/main/docs/ARCHITECTURE.md"}
 dependencies = [
     "fastapi>=0.110.0,<1.0.0",
     "uvicorn>=0.28.0,<1.0.0",

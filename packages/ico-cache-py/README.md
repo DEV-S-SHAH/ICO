@@ -1,46 +1,69 @@
-# ICO-Cache: Generalized LLM Semantic Cache
+# ico-cache
 
-ICO-Cache is a high-performance, multi-layered semantic caching engine for Large Language Models. It minimizes redundant LLM calls by precisely matching queries contextually and semantically, while strictly guarding against false hits through centralized entity, topic, and quarter metadata filtering.
+Semantic caching middleware for **LLM applications**. `ico-cache` sits between any
+coding agent, RAG pipeline, or LLM-based system and the model itself, caching model
+responses so repeated or reformulated prompts are never re-run through the LLM.
+
+It uses three complementary caching techniques:
+
+| Layer | Technique | Purpose |
+| --- | --- | --- |
+| **L1** | Exact | Instant hits for identical repeat queries (Redis / SQLite). |
+| **L2** | Semantic | Matches paraphrased and reworded queries (Qdrant / LanceDB). |
+| **L3** | Context-aware | Resolves multi-turn, context-dependent queries with dual vectors. |
+
+Key benefits, in order: **lower API token cost** (fewer calls to the LLM), **lower
+latency** (a cache hit returns in milliseconds instead of seconds), and minimal
+cache read/write overhead itself. A hard metadata gate (+ a 0% false-hit baseline)
+prevents near-miss cross-entity / cross-topic false positives.
+
+A reference implementation that showcases ico-cache end-to-end (against SEC filings,
+FastAPI + Streamlit) lives in `apps/financial-rag-demo` of the [repository] — it is
+a demo, not the product.
+
+## Install
+
+Requires Python 3.11+.
+
+```bash
+pip install ico-cache
+pip install "ico-cache[loaders,observability]"   # document loaders + tracing
+```
 
 ## Quickstart (Zero-Infra Embedded Mode)
 
+No external services — LanceDB (vectors), SQLite (exact), FastEmbed (local ONNX embeddings).
+
 ```python
-from ico_cache import ICOCache, ICOConfig
+import asyncio
+from ico_cache import CacheEngine
 from ico_cache.backends.vector.lancedb_store import LanceDBStore
 from ico_cache.backends.exact.sqlite_store import SQLiteStore
 from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
 
-# Initialize with embedded databases
-engine = ICOCache(
-    embedder=FastEmbedder(),
-    vector_store=LanceDBStore(uri="./lancedb"),
-    exact_store=SQLiteStore(db_path="cache.db")
-)
+async def main():
+    engine = CacheEngine(
+        embedder=FastEmbedder(),
+        vector_store=LanceDBStore(uri="./lancedb"),
+        exact_store=SQLiteStore(db_path="cache.db"),
+        metadata_filter_keys=["project", "topic"],
+        adaptive_threshold=True,
+    )
 
-# Resolve query
-result = await engine.resolve("What is Apple's revenue?", meta={"entity": "AAPL", "topic": "revenue"})
-if result["source"] == "MISS":
-    # Generate and ingest...
+    query = "What does the fetch_user(id) function return?"
+    result = await engine.resolve(query)
+    if result["source"] == "MISS":
+        answer = {"text": "It returns the user record matching id, or None when not found."}
+        engine.set_l1(query, answer)
+        await engine.async_write_l2(query, answer)
+    else:
+        print(f"Cache HIT via {result['source']}: {result['response']}")
+
+asyncio.run(main())
 ```
 
-## Performance & Reliability (Actual Measured Benchmarks)
+See the [main repository README](https://github.com/DEV-S-SHAH/ICO) for universal
+document ingestion, distributed server mode, Kubernetes deployment, testing, and
+benchmarking. The JavaScript SDK is published as `ico-cache-js`.
 
-Results from the `verify_all_5` suite run:
-
-| Metric | Result | Detail |
-|--------|--------|--------|
-| **False-Hit Rate** | **0%** (0 / 100) | Tested on challenging near-miss negatives (entity/quarter/topic swaps). |
-| **True-Hit Rate (L3)** | **100%** (10 / 10) | Correctly fires on same-context paraphrased queries. |
-| **Hit Latency** | **~46ms** | 100 isolated pairs evaluated in 4.6s. |
-| **Concurrency Guard** | **0 dupes** | Tested at 20, 50, and 100 concurrent identical queries (0 lock errors, max 1 generation). |
-
-## Architecture: Embedded vs Server Mode
-
-| Feature | Embedded Mode | Server Mode |
-|---------|---------------|-------------|
-| **Vector Store** | LanceDB (Local) | Qdrant (Docker) |
-| **Exact Store** | SQLite (Local) | Redis (Docker) |
-| **Setup Complexity** | Zero (just `pip install`) | Requires Docker/Compose |
-| **Best For** | Prototyping, small scripts, CLI apps | Production, multi-tenant APIs, heavy concurrency |
-
-For Server Mode, see `docker-compose.yml` and `api/server.py`.
+[repository]: https://github.com/DEV-S-SHAH/ICO

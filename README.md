@@ -1,4 +1,4 @@
-# ICO-Cache: Generalized LLM Semantic Cache & Universal Document RAG
+# ICO-Cache: Semantic Caching Middleware for LLM Applications
 
 [![CI](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml/badge.svg)](https://github.com/DEV-S-SHAH/ICO/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
