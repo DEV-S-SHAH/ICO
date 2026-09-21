@@ -1,44 +1,47 @@
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+# ICO-Cache — Development Guide
 
-This project is indexed by GitNexus as **ICO** (1048 symbols, 2042 relationships, 81 execution flows).
+Dataset-free semantic cache for LLM applications: L1 (exact), L2 (vector), L3 (RAG);
+async ingestion, multi-tenancy, observability, universal document loaders, and a
+Graph-RAG build prompt in `docs/`. No datasets are bundled — ingest your own documents.
 
-> Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
+## Repository Layout
 
-## Always Do
-
-- **MUST run impact before editing.** Use `impact({target: "symbolName", direction: "upstream"})` or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .`; report callers, processes, and risk. Never substitute grep for graph analysis.
-- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
-- MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
-- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit before MCP/CLI graph change analysis.
-
-## Resources
-
-| Resource | Use for |
+| Path | What it is |
 | --- | --- |
-| `gitnexus://repo/ICO/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/ICO/clusters` | All functional areas |
-| `gitnexus://repo/ICO/processes` | All execution flows |
-| `gitnexus://repo/ICO/process/{name}` | Step-by-step execution trace |
+| `packages/ico-cache-py/` | Python library (`ico-cache` on PyPI, module `ico_cache`). Python 3.11+. |
+| `packages/ico-cache-js/` | JavaScript SDK (`ico-cache-js`). Node.js 20+. |
+| `apps/financial-rag-demo/` | Demo API (FastAPI) + UI (Streamlit) built on the cache. |
+| `deploy/helm/ico-cache/` | Production Helm chart (Qdrant + Redis + API + worker). |
+| `examples/` | Schemas and ingestion scripts (financial schema, universal loaders). |
+| `scripts/` | Release gates: version sync, changelog, dry-run. |
+| `benchmark.py` | 5-dataset benchmark harness; JSON reports to `benchmark-reports/`. |
+| `audit.py` | `deps` (pip-audit) / `sast` (bandit) / `static` (ruff+mypy) / `ast` / `secrets`; reports to `audit-reports/`. |
+| `docs/` | Architecture and the Graph-RAG build prompt. |
 
-## CLI
+## Commands
 
-| Task | Read this skill file |
-| --- | --- |
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+```bash
+# Tests (Python 3.11)
+python -m pytest packages/ico-cache-py/tests/ -q
 
-<!-- gitnexus:end -->
+# Static + type checks
+python -m ruff check packages/ico-cache-py/src apps benchmark.py audit.py
+python -m mypy packages/ico-cache-py/src
+
+# Security / dependency audit
+python audit.py --all        # audits apps/financial-rag-demo/requirements-demo.txt
+
+# Benchmarks
+python benchmark.py --dataset all
+```
+
+## Conventions
+
+- **Dataset-free**: never commit data. Tests and benchmarks generate deterministic
+  fixtures at runtime (`packages/ico-cache-py/tests/fixtures_gen.py`).
+- **Version sync**: `ico-cache-py` and `ico-cache-js` must share the same version
+  (enforced by `tests/test_version_sync.py`).
+- **Universal loaders**: format detection sniffs content, never trusts extensions;
+  loaders must tolerate malformed/empty/non-UTF-8/large inputs without raising.
+  Active HTML content (`<script>`, event handlers) is stripped before parsing.
+- Do not commit secrets, build artifacts, or `node_modules/` (gitignored).

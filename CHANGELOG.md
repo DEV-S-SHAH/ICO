@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Vendored dependencies and tooling config**: `packages/ico-cache-js/node_modules/` (TypeScript compiler) is no longer committed (gitignored); GitNexus agent scaffolding (`.agents/`, `.claude/`) and its root docs (`AGENTS.md`/`CLAUDE.md` gitnexus block) removed; `test_concurrency.py` scratch load-test removed. `AGENTS.md` now documents the project itself; the Graph-RAG build prompt is tool-agnostic.
+
 ### Changed
 - **Default LLM is now Google Gemini** (`gemini/gemini-flash-latest` via LiteLLM). Configure with `GEMINI_API_KEY` and `LLM_MODEL`; `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` control timeouts and retries. Ollama is no longer required or shipped as the default.
 - **Python 3.11+ / Node.js 20+**: base images, CI and release workflows, `requires-python`, and ruff/mypy targets upgraded.

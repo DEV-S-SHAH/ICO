@@ -23,22 +23,21 @@ npm `ico-cache-js`) that other projects can `import` and deploy via the Helm cha
 
 ## Step 0 — Analyze the repo first (MANDATORY, do not skip)
 
-Before writing any code, run GitNexus graph intelligence on the working tree: `analyze --index-only` if stale.
+Before writing any code, build a mental model of the working tree using your own search and
+read tools (grep/glob/file reads), not assumptions:
 
-1. `node .gitnexus/run.cjs status --repo .` — check index freshness; if stale run
-   `node .gitnexus/run.cjs analyze --index-only --repo .`.
-2. `node .gitnexus/run.cjs query "semantic cache resolve generate" --repo .`
-3. `node .gitnexus/run.cjs query "universal document ingestion" --repo .`
-4. `node .gitnexus/run.cjs impact "CacheEngine.resolve_or_generate" --direction upstream --repo .`
-5. Read for yourself: `packages/ico-cache-py/src/ico_cache/core/cache_engine.py`,
-   `packages/ico-cache-py/src/ico_cache/loaders/auto_loader.py`,
-   `packages/ico-cache-py/src/ico_cache/rag/pipeline.py`,
-   `apps/financial-rag-demo/api/main.py`, `packages/ico-cache-py/pyproject.toml`,
-   `docs/ARCHITECTURE.md`.
+1. Map the layout: `packages/ico-cache-py/src/ico_cache/**`, `packages/ico-cache-js/src/`,
+   `apps/financial-rag-demo/api/`, `deploy/helm/ico-cache/`, `docs/ARCHITECTURE.md`.
+2. Trace key flows by reading code paths:
+   - `CacheEngine.resolve_or_generate` in `packages/ico-cache-py/src/ico_cache/core/cache_engine.py`
+   - universal ingestion: `packages/ico-cache-py/src/ico_cache/loaders/auto_loader.py`
+   - RAG fallback: `packages/ico-cache-py/src/ico_cache/rag/pipeline.py`
+   - API surface: `apps/financial-rag-demo/api/main.py`
+   - packaging: `packages/ico-cache-py/pyproject.toml`, `packages/ico-cache-js/package.json`
+3. Before editing any symbol, search for its callers/imports to gauge blast radius; never
+   edit a function/class without knowing who calls it and what depends on it.
 
 **Working rules that apply for the whole task:**
-- Run `impact` on a symbol BEFORE you edit it; never edit a function/class without knowing callers and risk. Treat `risk: UNKNOWN` as unresolved — confirm with text search before deleting anything.
-- Run `detect-changes --scope all --repo .` before every commit; a truncated/partial result is NOT clean — re-run until complete.
 - Do not weaken assertions. The suite is dataset-free by contract: all fixtures are generated at runtime (`packages/ico-cache-py/tests/fixtures_gen.py`). Never re-add data files.
 - Never commit secrets. Use `.env` (gitignored) for real keys; `REPLACE_WITH_*` placeholders in committed files.
 - Follow existing code style (ruff/mypy config at repo root). Reuse existing components; do not fork behaviour into a second copy.

@@ -29,7 +29,7 @@ warn_unused_ignores = false
 disable_error_code = ["assignment", "call-arg", "arg-type", "return-value", "list-item", "import-untyped"]
 
 [tool.bandit]
-exclude_dirs = ["venv", "packages/ico-cache-py/tests", ".gitnexus", "benchmark-reports", "audit-reports"]
+exclude_dirs = ["venv", "packages/ico-cache-py/tests", "benchmark-reports", "audit-reports"]
 skips = ["B101", "B104"]
 
 [tool.pytest.ini_options]

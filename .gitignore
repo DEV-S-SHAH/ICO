@@ -84,3 +84,6 @@ packages/ico-cache-py/dist/
 packages/ico-cache-py/build/
 packages/ico-cache-py/src/ico_cache.egg-info/
 *.egg-info/
+
+# Dependencies — never vendor node_modules
+node_modules/
