@@ -196,9 +196,28 @@ PYTHONPATH=packages/ico-cache-py/src pytest packages/ico-cache-py/tests/
 # 3. 0% false-hit evaluation harness (self-generating synthetic data, or pass --data-dir)
 PYTHONPATH=packages/ico-cache-py/src python3 eval_harness.py
 PYTHONPATH=packages/ico-cache-py/src python3 eval_harness.py --eval-adversarial
+
+# 4. Dataset-driven benchmarks (5 types: paraphrase-hit, adversarial, multilingual, code-ast, lifecycle)
+PYTHONPATH=packages/ico-cache-py/src python3 benchmark.py --dataset all
+
+# 5. Code & security audit (deps CVEs, bandit SAST, ruff/mypy, tree-sitter AST, secrets scan)
+PYTHONPATH=packages/ico-cache-py/src python3 audit.py --all
 ```
 
-CI runs lint, type-check, the full suite against live Redis + Qdrant, image builds, and `helm lint`/`template`. CodeQL runs on every push/PR and weekly.
+### Benchmark datasets
+
+| Dataset | What it measures | Report key |
+| --- | --- | --- |
+| `paraphrase-hit` | Efficiency: L1/L2 hit rate, latency p50/p90, throughput (QPS), LLM-avoidance | `l2_paraphrase_hit_rate`, `latency_ms`, `throughput_l1_qps` |
+| `adversarial` | Correctness: near-miss / hard-negative false hits, cross-topic + tenant-bleed prevention | `gated_by_schema`, `ungated_false_hits`, `tenant_bleed_count` |
+| `multilingual` | Embedding robustness across EN/HI/ES/JA | `per_language_l2_hit_rate` |
+| `code-ast` | tree-sitter entity extraction (py/js/go) + code-question hits | `ast_entity_counts`, `parse_success_all_languages` |
+| `lifecycle` | Freshness: stale-write suppression, invalidation, eviction hit ratio | `stale_write_suppressed`, `invalidation_cleared_l1`, `lru_eviction_hit_ratio` |
+
+Every dataset is generated deterministically at runtime — nothing is downloaded. Benchmark and audit reports are written to `benchmark-reports/` and `audit-reports/` as JSON.
+
+CI runs lint, type-check, the full suite against live Redis + Qdrant, image builds, and `helm lint`/`template`. CodeQL runs on every push/PR and weekly. The audit phases are also runnable as a pre-release gate:
+`venv/bin/python audit.py --only deps,sast`.
 
 ---
 

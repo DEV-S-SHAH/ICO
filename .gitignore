@@ -22,6 +22,8 @@ examples/**/processed/
 examples/**/chunks/
 examples/**/data/
 examples/test-corpus/
+benchmark-reports/
+audit-reports/
 *.jsonl
 *.htm
 
