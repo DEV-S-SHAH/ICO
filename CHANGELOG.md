@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector payloads are JSON-encoded on write and decoded on read (LanceDB), replacing the lossy `str()` / `replace("'", '"')` round-trip.
 - Test suite: real `conftest.py` with service-free fixtures, `asyncio_mode = "auto"`, a working single-flight stampede test, and unit tests for `resolve`.
 
+## [1.0.1] - 2026-09-21
+
+### Security
+- **Active-content hardening in `HTMLLoader`**: `<script>`/`<style>`/`nav`/`header`/`footer`/`aside`/`iframe` blocks, inline event handlers (`onerror=` etc.), and `javascript:` URIs are stripped from the raw markup *before* parsing. Python's bundled `html.parser` can re-parent such payloads into surrounding text on 3.11 for malformed documents, so source-level removal is parser-version-independent. XSS/`onerror` payloads are never ingested (verified on Python 3.11 / BeautifulSoup 4.15).
+- **`PyPDF2` replaced with `pypdf`** in core dependencies: removes PYSEC-2026-1835 (infinite loop), the only CVE in the production install. `pip-audit` on the production venv: **0 CVEs**.
+- **LanceDB cosine distance now actually applied**: `_distance` was silently L2 after the search-builder `.metric()` API was removed (lancedb ≥ 0.34), making cosine similarity wrong. Sets a cosine index per collection at creation and calls `.metric()` only when supported.
+- `audit.py` deps phase now audits the committed production file `apps/financial-rag-demo/requirements-demo.txt` (used by Dockerfiles).
+
+### Changed
+- Version **1.0.1** (Python `ico-cache` and JS `ico-cache-js` kept in sync per `test_version_sync`).
+
 ## [1.0.0] - 2026-09-20
 
 ### Added

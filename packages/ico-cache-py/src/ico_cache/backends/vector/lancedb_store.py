@@ -1,8 +1,11 @@
 import json
+import logging
 import re
 import lancedb
 from typing import Any, List, Optional
 from ..base import BaseVectorStore
+
+logger = logging.getLogger("ico_cache.backends.vector.lancedb")
 
 # Metadata keys/filter field names are identifiers, never expressions.
 _IDENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -46,9 +49,27 @@ class LanceDBStore(BaseVectorStore):
 
         if collection not in self._table_names():
             self.db.create_table(collection, data=[row])
+            self._ensure_cosine_index(collection, "vector")
         else:
             table = self.db.open_table(collection)
             table.add([row])
+
+    def _ensure_cosine_index(self, collection: str, vec_col: str) -> None:
+        """Persist a cosine index so ``_distance`` is cosine distance.
+
+        LanceDB moved the distance metric from the search builder to index
+        creation. Newer versions of ``lancedb`` expose ``.metric`` on the
+        builder, so also honor it there when the runtime supports it.
+        """
+        try:
+            table = self.db.open_table(collection)
+            create_index = getattr(table, "create_index", None)
+            if create_index is not None:
+                create_index(metric="cosine", vector_column_name=vec_col)
+        except Exception as e:
+            logger.warning(f"Cosine index unavailable for {collection}: {e}")
+            # Small/seed collections may reject index creation; flat search
+            # remains functional and the search layer still attempts .metric.
 
     async def search(
         self,
@@ -68,10 +89,14 @@ class LanceDBStore(BaseVectorStore):
         vec_col = f"vector_{using}" if using and f"vector_{using}" in schema_names else "vector"
 
         try:
-            res = table.search(vector, vector_column_name=vec_col).metric("cosine").limit(limit).to_list()
+            query = table.search(vector, vector_column_name=vec_col)
+            metric = getattr(query, "metric", None)
+            if metric is not None:
+                query = metric("cosine")
+            res = query.limit(limit).to_list()
         except Exception:
             try:
-                res = table.search(vector).metric("cosine").limit(limit).to_list()
+                res = table.search(vector).limit(limit).to_list()
             except Exception:
                 res = table.search(vector).limit(limit).to_list()
 

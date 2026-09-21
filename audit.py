@@ -161,10 +161,9 @@ def audit_ast(targets: list) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def audit_deps() -> dict:
-    req = os.path.join(ROOT, "requirements.txt")
-    if not os.path.exists(req):
-        return {"phase": "deps", "status": "skipped", "reason": "requirements.txt not found"}
+def audit_deps(req: str = None) -> dict:
+    if req is None:
+        req = os.path.join(ROOT, "apps", "financial-rag-demo", "requirements-demo.txt")
     result = run([sys.executable, "-m", "pip_audit", "-r", req, "--progress-spinner", "off", "--format", "json"])
     stdout = result["stdout"]
     vulns = []
@@ -239,8 +238,9 @@ def main() -> int:
         parser.error("pass --all or --only <phase>")
 
     targets = ["packages/ico-cache-py/src", "apps/financial-rag-demo"]
+    reqs = os.path.join(ROOT, "apps", "financial-rag-demo", "requirements-demo.txt")
     fn_for = {
-        "deps": lambda: audit_deps(),
+        "deps": lambda: audit_deps(reqs),
         "sast": lambda: audit_sast(targets),
         "static": lambda: audit_static([*targets, "benchmark.py", "audit.py"], ["packages/ico-cache-py/src"]),
         "ast": lambda: audit_ast(targets),

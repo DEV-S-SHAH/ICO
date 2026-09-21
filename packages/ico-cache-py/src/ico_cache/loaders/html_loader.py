@@ -1,11 +1,37 @@
 import logging
 import os
+import re
 from typing import List, Optional
 from bs4 import BeautifulSoup
 from .base import BaseLoader, Chunk
 from ..core.metadata_guard import MetadataSchema
 
 logger = logging.getLogger("ico_cache.loaders.html_loader")
+
+_BLOCK_STRIP_RE = re.compile(
+    r"<(script|style|nav|header|footer|aside|iframe)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_EVENT_HANDLER_RE = re.compile(r"\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+_JAVASCRIPT_URI_RE = re.compile(
+    r"\b(?:src|href|action|formaction)\s*=\s*(\"javascript:[^\"]*\"|'javascript:[^']*'|javascript:[^\s>]+)",
+    re.IGNORECASE,
+)
+
+
+def _strip_active_content(content: str) -> str:
+    """Remove active content at the source level.
+
+    Python's bundled ``html.parser`` (bs4 backend) can re-parent script/style
+    bodies and emit malformed tag attributes (e.g. ``onerror=``) as raw text,
+    so removing them after parsing is unreliable. Stripping the raw markup first
+    makes script/style payloads and inline event handlers impossible to ingest,
+    regardless of the parser's behavior on malformed documents.
+    """
+    content = _BLOCK_STRIP_RE.sub("", content)
+    content = _EVENT_HANDLER_RE.sub("", content)
+    content = _JAVASCRIPT_URI_RE.sub("", content)
+    return content
 
 
 class HTMLLoader(BaseLoader):
@@ -20,6 +46,7 @@ class HTMLLoader(BaseLoader):
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
+            content = _strip_active_content(content)
             soup = BeautifulSoup(content, "html.parser")
         except Exception as e:
             logger.warning(f"Failed to read/parse HTML {file_path}: {e}")
