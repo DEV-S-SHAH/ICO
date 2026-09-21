@@ -41,10 +41,11 @@ jobs:
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "redis-cli ping"
+          --health-cmd "redis-cli -a myredissecret ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+        command: ["redis-server", "--requirepass", "myredissecret"]
       qdrant:
         image: qdrant/qdrant:v1.12.4
         ports:

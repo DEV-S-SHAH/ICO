@@ -15,10 +15,12 @@ jobs:
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "redis-cli ping"
+          --health-cmd "redis-cli -a myredissecret ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+        # Start redis with password matching test harness expectation
+        command: ["redis-server", "--requirepass", "myredissecret"]
       qdrant:
         image: qdrant/qdrant:v1.12.4
         ports:
@@ -45,6 +47,11 @@ jobs:
             sleep 2
           done
           curl -sf http://localhost:6333/ || (echo "ERROR: Qdrant not ready after 60s" && exit 1)
+
+      - name: Install System Dependencies (Tesseract & Poppler for OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr poppler-utils libtesseract-dev
 
       - name: Set up Python
         uses: actions/setup-python@v5
