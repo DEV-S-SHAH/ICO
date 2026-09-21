@@ -250,20 +250,21 @@ def run_50_queries_benchmark():
 
     # PHASE 1: WITHOUT CACHE
     print("\n" + "-" * 85)
-    print(">>> RUNNING 50 QUERIES WITHOUT CACHE (Every request calls LLM)...")
+    print(">>> RUNNING 50 QUERIES WITHOUT CACHE (Calling Google Gemini API directly)...")
     print("-" * 85)
     no_cache_results = []
     t_start = time.time()
     for idx, item in enumerate(query_set):
         res = run_single_rag(item["query"], cache_layer=None)
         no_cache_results.append(res)
-        if (idx + 1) % 10 == 0 or idx == 0:
-            print(f"  [No-Cache] Processed {idx + 1}/50 queries... Latency: {res['latency_ms']:.1f}ms, Cost: ${res['cost_usd']:.6f}")
+        print(f"  [No-Cache] #{idx + 1:02d}/50 | Latency: {res['latency_ms']:.1f}ms | Cost: ${res['cost_usd']:.6f} | Query: {item['query'][:45]}...")
+        # Pace requests to respect Gemini free-tier quota (15 req/min -> 4.2s delay)
+        time.sleep(4.2)
     t_no_cache_total = time.time() - t_start
 
     # PHASE 2: WITH CACHE
     print("\n" + "-" * 85)
-    print(">>> RUNNING 50 QUERIES WITH INTELLIGENT CACHE (Exact + Semantic Layer)...")
+    print(">>> RUNNING 50 QUERIES WITH INTELLIGENT CACHE (Exact + Semantic Reuse)...")
     print("-" * 85)
     cache_inst = IntelligentCache(
         similarity_threshold=0.88,
@@ -276,8 +277,10 @@ def run_50_queries_benchmark():
     for idx, item in enumerate(query_set):
         res = run_single_rag(item["query"], cache_layer=cache_inst)
         with_cache_results.append(res)
-        if (idx + 1) % 10 == 0 or idx == 0:
-            print(f"  [With-Cache] Processed {idx + 1}/50 queries... Hit: {res['hit_type']:<8} Latency: {res['latency_ms']:.2f}ms, Cost: ${res['cost_usd']:.6f}")
+        print(f"  [With-Cache] #{idx + 1:02d}/50 | Hit: {res['hit_type']:<8} | Latency: {res['latency_ms']:.2f}ms | Cost: ${res['cost_usd']:.6f}")
+        # Only sleep if it was a cache miss (i.e. called Gemini API)
+        if res["hit_type"] == "NONE":
+            time.sleep(4.2)
     t_with_cache_total = time.time() - t_start
 
     # AGGREGATION & METRICS
