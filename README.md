@@ -6,9 +6,13 @@
 [![PyPI](https://img.shields.io/badge/pypi-ico--cache-blue.svg)](https://pypi.org/project/ico-cache/)
 [![npm](https://img.shields.io/badge/npm-ico--cache--js-red.svg)](https://www.npmjs.com/)
 
-ICO-Cache is a production-grade, installable 3-tier semantic caching and retrieval engine for LLMs. It turns repetitive LLM generation from seconds into tens of milliseconds, cuts inference cost, and enforces a **0% false-hit rate** through hard metadata gating.
+ICO-Cache is a Python library — an application layer between any LLM-powered system and the model itself — that caches LLM responses so repeated or reformulated prompts are never re-run through the model. It ships as a pip package (`ico-cache`) and an npm SDK (`ico-cache-js`), and uses three complementary caching techniques — **exact (L1)**, **semantic (L2)**, and **context-aware (L3)** — to answer identical, paraphrased, and context-dependent queries without a fresh LLM generation.
+
+By sitting in front of the model — whether used by a coding agent, a RAG pipeline, or any other LLM-based application — ICO-Cache first reduces **API token cost** (fewer calls to the LLM), then **latency** (a cache hit returns in milliseconds instead of seconds), while keeping the cache's own read/write overhead minimal.
 
 It ships with a **universal ingestion layer**: CSV, TXT, JSON/JSONL, HTML, PDF (text-layer and scanned/OCR), OpenDocument (ODT/ODS), Microsoft Office (DOCX/XLSX/PPTX), images, and source code are all auto-detected **by content, not file extension** — so you can feed it any document and it just works. **No datasets are bundled**; you bring your own documents.
+
+> **See it in action:** `apps/financial-rag-demo` is a *reference implementation* that runs ico-cache end-to-end against SEC filings (FastAPI + Streamlit). It exists to showcase the library — it is a demo, not the product.
 
 Read the [Detailed Cache Architecture & Layer Design Guide](docs/ARCHITECTURE.md).
 
@@ -50,7 +54,7 @@ Read the [Detailed Cache Architecture & Layer Design Guide](docs/ARCHITECTURE.md
 ├── examples/
 │   ├── financial_schema.py        # SEC-filing metadata schema
 │   ├── universal_schema.py        # Cross-format metadata schema
-│   ├── ingest_*.py                # Ready-made ingestion entry points
+│   ├── ingest_*.py                # Non-financial ingest entry points (code / documents / structured)
 │   └── sec-filings-corpus/        # SEC EDGAR fetching/cleanup scripts (no data committed)
 ├── deploy/helm/ico-cache/         # Hardened installable Helm chart
 ├── docs/ARCHITECTURE.md           # In-depth architectural documentation
@@ -102,22 +106,22 @@ async def main():
         embedder=FastEmbedder(),
         vector_store=LanceDBStore(uri="./lancedb"),
         exact_store=SQLiteStore(db_path="cache.db"),
-        metadata_filter_keys=["entity", "quarter", "topic"],
+        metadata_filter_keys=["project", "topic"],
         adaptive_threshold=True,
     )
 
-    query = "What was Apple's total revenue in Q1?"
+    query = "What does the fetch_user(id) function return?"
     result = await engine.resolve(query)
 
     if result["source"] == "MISS":
         print("Cache MISS. Generating fresh response...")
-        answer = {"text": "$119.58 billion as reported in Apple Q1 10-Q."}
+        answer = {"text": "It returns the user record matching id, or None when the user does not exist."}
         engine.set_l1(query, answer)
         await engine.async_write_l2(query, answer)
     else:
         print(f"Cache HIT via {result['source']}: {result['response']}")
 
-    paraphrased = "Apple Q1 revenue total"
+    paraphrased = "what does fetch_user return for an unknown id?"
     hit = await engine.resolve(paraphrased)
     print(f"Paraphrased query hit: {hit['source']} -> {hit['response']}")
 
