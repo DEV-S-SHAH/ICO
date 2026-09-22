@@ -5,18 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Removed
-- **Vendored dependencies and tooling config**: `packages/ico-cache-js/node_modules/` (TypeScript compiler) is no longer committed (gitignored); GitNexus agent scaffolding (`.agents/`, `.claude/`) and its root docs (`AGENTS.md`/`CLAUDE.md` gitnexus block) removed; `test_concurrency.py` scratch load-test removed. `AGENTS.md` now documents the project itself.
-- **Dead/unreferenced files**: `docs/BUILD_GRAPH_RAG_TERMINAL_PROMPT.md` (agent build prompt), `PRODUCTION_CHECKLIST.md`, `langfuse-compose-example.yml`, and `apps/financial-rag-demo/ui/scripted_journey.json` (no references anywhere in the repo).
-
-### Changed
-- **Default LLM is now Google Gemini** (`gemini/gemini-flash-latest` via LiteLLM). Configure with `GEMINI_API_KEY` and `LLM_MODEL`; `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` control timeouts and retries. Ollama is no longer required or shipped as the default.
-- **Python 3.11+ / Node.js 20+**: base images, CI and release workflows, `requires-python`, and ruff/mypy targets upgraded.
-- **Universal, dataset-free by design**: all bundled corpora (`examples/test-corpus`, `examples/sec-filings-corpus/datasets`, `examples/data`) removed from the repository. The test suite and `eval_harness.py` now generate deterministic synthetic fixtures at runtime, so the library ingests any document you provide — no data ships with it.
+## [1.0.5] - 2026-09-23
 
 ### Added
+- **Semantic serve gate (`serve_threshold`, default `0.90`)**: a cached L2/L3 response is served only when cosine similarity to the logged question meets or exceeds the gate, eliminating wrong answers from near-identical but differently-worded queries (measured: 0 incorrect serves across the 11-corpus benchmark matrix).
+- **Embedding memoization (`_emb_cache`)**: repeated identical queries skip re-embedding — warm lookup mean drops 14.4 ms → 1.3 ms.
+- **Optional evidence-grounding band** (`paraphrase_threshold` / `evidence_overlap_threshold`, off by default): serves near-threshold paraphrase matches only when the target evidence appears in the current retrieval context.
 - **Single-flight generation**: `CacheEngine.resolve_or_generate` coalesces concurrent identical cache misses into one generation and performs conditional (insert-if-absent) writes.
 - **Never cache errors**: refusals ("Insufficient context."), empty answers, and generation failures are returned to the caller but never written to L1/L2/L3.
 - **Graceful degradation**: each L1/L2/L3 lookup is bounded by `lookup_timeout` and failures are swallowed to a MISS instead of surfacing a 500.
@@ -29,11 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Observability**: Prometheus metrics (`/v1/metrics`), `configure_logging` structured JSON logs, OTel/Langfuse tracing exporters, `/v1/health` + `/v1/ready` probes (readiness 503s when a dependency is down).
 - **Distributed rate limiting**: cluster-wide limit via `RATE_LIMIT_STORAGE_URI` (Redis) with hashed-API-key buckets; `memory://` in dev.
 - **Helm hardening**: Qdrant/Redis StatefulSets with PVCs and retain-on-delete, pod/container `securityContext`s (non-root, read-only root, dropped caps, seccomp), external-secrets operator support, ServiceAccount + automount-off, PodDisruptionBudgets, immutable image digests, and a real worker entrypoint (`python -m ico_cache.invalidation` with a `/healthz` HTTP probe and graceful shutdown).
-- **Dependency automation**: Dependabot (pip/npm/docker/actions) and CodeQL (Python + JavaScript/TypeScript) on push/PR and weekly.
+- **CodeQL security scanning** (Python + JavaScript/TypeScript) on push/PR and weekly.
+
+### Changed
+- **Truthful hit/miss counters**: counters now reflect the actual store/serve outcome (previously the miss counter also incremented on hits and on non-cacheable queries).
+- **Recommended RAG configuration**: `CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)` — context-awareness stays on exact (L1) traffic while semantic serves are gated.
+- **Default LLM is now Google Gemini** (`gemini/gemini-flash-latest` via LiteLLM). Configure with `GEMINI_API_KEY` and `LLM_MODEL`; `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` control timeouts and retries. Ollama is no longer required or shipped as the default.
+- **Python 3.11+ / Node.js 20+**: base images, CI and release workflows, `requires-python`, and ruff/mypy targets upgraded.
+- **Universal, dataset-free by design**: all bundled corpora (`examples/test-corpus`, `examples/sec-filings-corpus/datasets`, `examples/data`) removed from the repository. The test suite and `eval_harness.py` now generate deterministic synthetic fixtures at runtime, so the library ingests any document you provide — no data ships with it.
 
 ### Fixed
+- **L2/L3 context binding**: L2 entries store the invoked `in_context`; a re-served L2 value is returned only when the new query's context is attached over it, and `l2_l3_ttl` (default `3600` s) expires stale L2/L3 re-serves.
+- **Cacheability refusal filter**: answers that must never be replayed ("insufficient context", short/empty/error responses) are excluded from caching and serving.
 - Vector payloads are JSON-encoded on write and decoded on read (LanceDB), replacing the lossy `str()` / `replace("'", '"')` round-trip.
 - Test suite: real `conftest.py` with service-free fixtures, `asyncio_mode = "auto"`, a working single-flight stampede test, and unit tests for `resolve`.
+
+### Removed
+- **Vendored dependencies and tooling config**: `packages/ico-cache-js/node_modules/` (TypeScript compiler) is no longer committed (gitignored); GitNexus agent scaffolding (`.agents/`, `.claude/`) and its root docs gitnexus blocks removed; `test_concurrency.py` scratch load-test removed. `AGENTS.md` now documents the project itself.
+- **Dead/unreferenced files**: `docs/BUILD_GRAPH_RAG_TERMINAL_PROMPT.md`, `PRODUCTION_CHECKLIST.md`, `langfuse-compose-example.yml`, and `apps/financial-rag-demo/ui/scripted_journey.json`.
+- **Orphaned SEC EDGAR ingestion scaffolding** (`examples/sec-filings-corpus/`): input corpora were already removed; no code, tests, or docs reference the ingestion scripts.
+- **Dependabot configuration** (`.github/dependabot.yml`): automated dependency-update branches stopped to keep `main` free of noise branches.
 
 ## [1.0.4] - 2026-09-22
 
