@@ -91,6 +91,25 @@ engine = CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)
 - **Observability** — Prometheus metrics, OpenTelemetry/Langfuse tracing, structured JSON logs, `/v1/ready` probes.
 - **Cross-platform** — verified on Linux, Windows, and macOS.
 
+### 🧪 Testing & Evaluation
+
+The package ships with a 3-layer safety net, all running in CI on every push:
+
+| Layer | Test | What it guards |
+| :--- | :--- | :--- |
+| Unit | `pytest packages/ico-cache-py/tests/` | exact/semantic/context tiers, backends, invalidation, multitenancy, security hardening, version sync |
+| Baseline | `eval_harness.py` | **0% false-hit baseline** across text/structured/code/mixed + adversarial tenants |
+| Cost | `scripts/cost_analysis.py` | cost & latency invariant on a committed 50-query benchmark — verifies the report stays in sync and **caching never costs more than no-caching** |
+
+Run them yourself:
+
+```bash
+pip install "ico-cache[dev] @ ."
+pytest packages/ico-cache-py/tests/
+python eval_harness.py
+python scripts/cost_analysis.py
+```
+
 ---
 
 ## 📄 Ingest Documents & Text
