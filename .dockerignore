@@ -1,0 +1,42 @@
+# Version control / CI
+.git
+.gitignore
+.github
+
+# Python artifacts and caches
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+**/.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node artifacts
+**/node_modules/
+**/dist/
+**/build/
+
+# Secrets and local env
+.env
+**/.env
+*.pem
+
+# Local state, data dumps and logs
+*.log
+*.db
+lancedb/
+test_lancedb/
+.coverage
+htmlcov/
+**/*.ipynb_checkpoints/
+
+# Repo-root scratch scripts that are gitignored (keep build context clean)
+requirements.txt
+eval_harness.py
+verify_all_5.py
+run_1000_queries.py
+test_concurrency.py

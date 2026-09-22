@@ -1,128 +1,218 @@
-# ⚡ LangGraph RAG with `ico-cache` & Google Gemini
+# ICO-Cache: Semantic Caching Middleware for LLM Applications
 
-A simple, fast, and smart RAG (Retrieval-Augmented Generation) application built using **LangGraph**, **Google Gemini**, and the official **[`ico-cache`](https://pypi.org/project/ico-cache/)** library from PyPI.
+[![CI](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml/badge.svg)](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ico-cache.svg)](https://pypi.org/project/ico-cache/)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://pypi.org/project/ico-cache/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
+ICO-Cache is a high-performance, cross-platform semantic caching middleware designed for **LLM applications, coding agents, and RAG pipelines**. It sits directly between your application and model APIs, caching responses so repeated or semantically equivalent queries never re-run through the LLM.
 
-## 💡 What is this project?
-
-When building AI applications with RAG:
-1. **Without Cache:** Every time a user asks a question, your app calls Google Gemini API. This is slow (takes 2 to 6 seconds), hits rate limits, and costs money for every token.
-2. **With Cache (`ico-cache`):** If someone asks the same question—or even a *similar question in different words*—the answer is served directly from memory in **less than 3 milliseconds** at **$0.00 cost**.
-
----
-
-## 📦 How to Install `ico-cache` from PyPI
-
-The library is published on PyPI at **[pypi.org/project/ico-cache](https://pypi.org/project/ico-cache/)**.
-
-To install everything with one simple command:
+It is available as both a Python library ([`ico-cache`](https://pypi.org/project/ico-cache/)) and a TypeScript/JavaScript SDK (`ico-cache-js`).
 
 ```bash
-# 1. Create and activate a clean Python 3.11 environment
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 2. Install all requirements (includes ico-cache from PyPI)
-pip install -r requirements.txt
-```
-
-> **Direct pip command:**  
-> You can also install the cache library directly anytime via:  
-> `pip install ico-cache`
-
----
-
-## 🛠️ How to Use It in 3 Simple Steps
-
-### Step 1: Set your Gemini API Key
-```bash
-export GEMINI_API_KEY="your-gemini-api-key"
-```
-
-### Step 2: Download the Dataset (PDF & Text)
-Uses `ico-cache`'s built-in **`AutoLoader`** to parse the official *Attention Is All You Need* PDF paper and AI technical articles:
-```bash
-python src/download_data.py
-```
-
-### Step 3: Run the Benchmark (See With vs Without Cache)
-Runs 50 realistic queries, compares the responses, and saves the results to CSV and JSON:
-```bash
-python benchmark.py
+pip install ico-cache
 ```
 
 ---
 
-## 🔍 How Does "With Cache" vs "Without Cache" Actually Work?
+## Why ICO-Cache?
 
-Here is the exact difference in simple, plain code:
+| Metric | Without Cache | With ICO-Cache (`pip install ico-cache`) |
+| :--- | :--- | :--- |
+| **API Token Cost** | 100% cost on every repeated/reworded prompt | **Drastically reduced** via L1 exact & L2/L3 semantic hits |
+| **Response Latency** | Seconds (2,000ms – 10,000ms+) | **Sub-millisecond** (L1) or **15–30ms** (L2/L3) |
+| **False-Hit Rate** | Prone to false positives in naïve vector caches | **0.00% false-hit baseline** enforced by `hard_gate` metadata validation + `serve_threshold` semantic gate |
+| **Cross-Platform** | Fragile file locking / signal handling | **Fully supported** across Linux, Windows, and macOS |
 
-### ❌ 1. Without Cache (Calls Gemini API Every Time)
+> **Reference Demo:** `apps/financial-rag-demo` provides a reference implementation running against SEC filings with FastAPI + Streamlit to illustrate real-world usage.
+
+For full setup options, see [Installation & Extras](#installation) or the [Architecture Documentation](docs/ARCHITECTURE.md).
+
+---
+
+## Core Capabilities
+
+- **3-Tier Semantic Hierarchy**:
+  - **L1 (Exact)**: Sub-millisecond direct key lookup (Redis / SQLite) with metadata fingerprinting.
+  - **L2 (Semantic)**: Vector cosine similarity matching for rephrased queries (Qdrant / LanceDB).
+  - **L3 (Context-Aware)**: Multi-vector representation accounting for session and dialogue context.
+- **Blast-Radius Guardrails**: Strict `hard_gate` schema checks prevent cross-entity, cross-quarter, or cross-tenant cache bleed.
+- **Single-Flight Coalescing**: Concurrent identical cache misses collapse into a single LLM request.
+- **Universal Ingestion**: Content-sniffed loaders (PDF, Office DOCX/XLSX/PPTX, ODF ODT/ODS, TXT, CSV, JSON/JSONL, HTML, Code AST, Images with OCR).
+- **Multi-Tenancy**: Isolated partitions via dedicated collections or timing-safe authenticated payload filters.
+- **Production Observability**: Built-in Prometheus metrics (`/metrics`), OpenTelemetry tracing, structured JSON logs, and `/v1/ready` health probes.
+- **Zero-Infra Mode**: Runs out of the box with embedded SQLite + LanceDB + FastEmbed without Docker dependencies.
+
+---
+
+## Installation
+
+Requires **Python 3.11+**. Fully compatible with Linux, Windows, and macOS.
+
+```bash
+# Core package from PyPI
+pip install ico-cache
+
+# With document loaders (PDF, OCR, Office, AST parsers) and tracing
+pip install "ico-cache[loaders,observability]"
+```
+
+### TypeScript / JavaScript SDK
+
+```bash
+cd packages/ico-cache-js
+npm install
+npm run build
+```
+
+---
+
+## Quickstart: Zero-Infra Embedded Mode
+
+Run an entire semantic cache locally in 30 seconds with **zero external services** (LanceDB, SQLite, and local FastEmbed embeddings run embedded out of the box):
+
 ```python
-# Every single query makes a network call to Google Gemini
-response = gemini_model.generate_content(prompt)
+import asyncio
+from ico_cache import CacheEngine
 
-# Result:
-# ⏱️ Latency: 2,500 ms - 6,000 ms
-# 💰 Cost: $0.00008 per call
-# ⚠️ Risk: Hits Google API rate limits quickly
+async def main():
+    # Initialize zero-infra cache (LanceDB + SQLite + FastEmbed)
+    engine = CacheEngine.embedded()
+
+    # Query 1: Initial user question
+    query = "What does the fetch_user(id) function return?"
+    result = await engine.resolve(query)
+
+    if result["source"] == "MISS":
+        print("Cache MISS. Calling model...")
+        answer = {"text": "It returns the user record matching id, or None if not found."}
+        # Save to exact (L1) and semantic (L2) cache
+        engine.set_l1(query, answer)
+        await engine.async_write_l2(query, answer)
+    else:
+        print(f"Cache HIT via {result['source']}: {result['response']}")
+
+    # Query 2: Paraphrased query — instantly matches via L2 semantic cache!
+    paraphrased = "what is the return value of fetch_user with an id?"
+    hit = await engine.resolve(paraphrased)
+    print(f"Paraphrased query hit: {hit['source']} -> {hit['response']}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-### ✅ 2. With Cache (`ico-cache`)
+---
+
+## Serving Guardrails & Recommended Configuration
+
+In production, gate semantic serves so a cached answer is only returned for sufficiently similar questions — this prevents wrong answers on near-identical but differently-worded queries:
+
 ```python
-from intelligent_cache import IntelligentCache
+engine = CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)
+```
 
-# Initialize the cache
-cache = IntelligentCache(similarity_threshold=0.75)
+- **`serve_threshold`** (default `0.90`) — cosine similarity a rephrased query must reach to serve a cached L2/L3 answer. Lower = more hits but more risk.
+- **`bind_context_to_l1=True`** — keep context-awareness on exact (L1) traffic only; recommended for RAG pipelines.
+- **`l2_l3_ttl`** (default `3600`) — expiry (seconds) for L2/L3 re-serves.
+- **`paraphrase_threshold` / `evidence_overlap_threshold`** (off by default) — optional evidence-grounding band for paraphrase hits; keep off on small corpora.
 
-# Check cache before calling Gemini
-cached_result = cache.get(prompt)
+Measured across 11 corpora (warm cache): **74–100% of LLM calls eliminated with 0 additional incorrect answers**. Finance/contract-style corpora should raise `serve_threshold` to ~0.95.
 
-if cached_result:
-    # CACHE HIT! Instant response
-    answer = cached_result.value
-else:
-    # CACHE MISS! Call Gemini once and save it
-    answer = gemini_model.generate_content(prompt).text
-    cache.set(prompt, answer)
+---
 
-# Result on repeated or similar questions:
-# ⏱️ Latency: 0.05 ms (Exact match) or 2.3 ms (Similar question)
-# 💰 Cost: $0.00 (Zero API tokens used!)
-# 🚀 Speedup: Up to 28,000x faster
+## Universal Document Ingestion
+
+ICO-Cache sniffs content headers directly (extension-agnostic) with automatic OCR fallback for scanned pages and images:
+
+```python
+from ico_cache.loaders import AutoLoader, configure_ocr
+from examples.universal_schema import universal_schema
+
+# Optional OCR configuration
+configure_ocr(enabled=True, languages="eng")
+
+loader = AutoLoader(schema=universal_schema)
+chunks = loader.load("quarterly_report.pdf")
+
+for chunk in chunks:
+    print(f"[{chunk.page_or_section}] {chunk.text[:100]}... (Metadata: {chunk.metadata})")
 ```
 
 ---
 
----
+## Distributed Production Deployment
 
-## 📊 Benchmark & Performance Comparison
+### Docker Compose Stack
 
-A side-by-side comparison of direct LLM calls vs intelligent caching:
+Launch the production API, Streamlit UI, Qdrant, and Redis:
 
-| Metric | Without Cache (Direct Gemini API) | With Cache (`ico-cache`) | Impact |
-| :--- | :--- | :--- | :--- |
-| **Response Latency** | 1,500 ms – 6,000 ms | **0.05 ms – 3.8 ms** | **96% Faster (Instant)** |
-| **Repeated / Duplicate Queries** | 2,000+ ms per call | **0.05 ms** (Zero drift) | Instant hash hit |
-| **Semantically Similar Queries** | Re-invokes LLM every time | **2.0 – 4.0 ms** | Reuses grounded answer |
-| **Token Usage & Quota** | Consumes full tokens each call | **Zero tokens used on cache hits** | **~90% Token Reduction** |
-| **LLM Inference Cost** | Billed on every request | **$0.000000 on hits** | **~90% Cost Savings** |
-| **API Rate Limit Exceptions** | Prone to 429 Too Many Requests | **Protected by cache shield** | 100% reliable |
-
----
-
-## 📁 Benchmark Data & Response Logs
-
-The benchmark outputs clean, structured logs for analysis:
-* **CSV Format:** [`benchmark_results/responses_50_queries.csv`](benchmark_results/responses_50_queries.csv) — Formatted with clean text wrapping, proper cell quoting, and fixed decimal precision (no scientific `e` notation).
-* **JSON Format:** [`benchmark_results/responses_50_queries.json`](benchmark_results/responses_50_queries.json) — Full metadata and responses for downstream evaluation.
-
----
-
-## 🧪 Optional: How to Evaluate Response Quality
-To verify that cached answers have the same high accuracy as fresh Gemini answers:
 ```bash
-python evaluate.py
+cp .env.example .env
+cd apps/financial-rag-demo/docker
+docker compose up -d
 ```
-This tests **faithfulness** (no hallucinations), **relevance**, and **ROUGE accuracy**.
+
+- **API Documentation**: `http://localhost:8000/docs`
+- **Health / Readiness**: `http://localhost:8000/v1/health` | `http://localhost:8000/v1/ready`
+- **Prometheus Metrics**: `http://localhost:8000/v1/metrics`
+- **Interactive UI**: `http://localhost:8501`
+
+### Kubernetes (Helm)
+
+```bash
+helm install ico-cache deploy/helm/ico-cache \
+  --set secrets.geminiApiKey='<your-key>' \
+  --set externalSecrets.enabled=false
+```
+
+---
+
+## Testing & Quality Assurance
+
+All test fixtures are deterministically generated at runtime (**no external datasets to download**):
+
+```bash
+# 1. Lint and type-check
+python -m ruff check packages/ico-cache-py/src apps/financial-rag-demo
+python -m mypy packages/ico-cache-py/src
+
+# 2. Pytest test suite
+python -m pytest packages/ico-cache-py/tests/ -v
+
+# 3. 0% false-hit baseline verification
+python eval_harness.py
+python eval_harness.py --eval-adversarial
+
+# 4. 5-Dataset benchmark harness
+python benchmark.py --dataset all
+
+# 5. Security and vulnerability audit
+python audit.py --all
+```
+
+---
+
+## Repository Layout
+
+```text
+.
+├── packages/
+│   ├── ico-cache-py/          # Python library ('ico-cache' on PyPI)
+│   └── ico-cache-js/          # TypeScript SDK ('ico-cache-js')
+├── apps/
+│   └── financial-rag-demo/    # Reference FastAPI + Streamlit application
+├── deploy/helm/ico-cache/     # Production Kubernetes Helm chart
+├── examples/                  # Ingestion scripts & schema definitions
+├── docs/                      # In-depth architectural specifications
+├── benchmark.py               # 5-dataset benchmark harness
+├── audit.py                   # SAST, dependency, and AST security audit suite
+├── eval_harness.py            # False-hit gatekeeper evaluation
+└── CHANGELOG.md               # Version history and release notes
+```
+
+---
+
+## License
+
+Distributed under the [MIT License](LICENSE).

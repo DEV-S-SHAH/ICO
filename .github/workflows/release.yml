@@ -1,0 +1,278 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+# Never let two releases race on the same tag (double PyPI/npm publish).
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, Gate, and Publish Release
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.pypi_prod.outcome }}
+    env:
+      # Resolve the tag for both push-tag and manual dispatch triggers.
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Job-level credential flags: secrets are NOT available in step-level
+      # `if:` from a step's own env, which silently disabled every gate before.
+      HAS_PYPI: ${{ secrets.PYPI_API_TOKEN != '' }}
+      HAS_TEST_PYPI: ${{ secrets.TEST_PYPI_API_TOKEN != '' }}
+      HAS_NPM: ${{ secrets.NPM_TOKEN != '' }}
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli -a myredissecret ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        command: ["redis-server", "--requirepass", "myredissecret"]
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
+        # No in-container health-check: the qdrant image has no curl/wget and a
+        # failing health command aborts the whole service container. Readiness is
+        # probed by the "Wait for Qdrant to be ready" step from the runner host.
+        options: >-
+          --health-cmd "true"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate release credentials
+        run: |
+          if [ "${HAS_PYPI}" != "true" ] && [ "${HAS_NPM}" != "true" ]; then
+            echo "::error::Neither PYPI_API_TOKEN nor NPM_TOKEN is configured; refusing to cut a release."
+            exit 1
+          fi
+
+      - name: Wait for Qdrant to be ready
+        run: |
+          echo "Waiting for Qdrant on port 6333..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:6333/ > /dev/null 2>&1; then
+              echo "Qdrant is ready after $((i*2)) seconds"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:6333/ || (echo "ERROR: Qdrant not ready after 60s" && exit 1)
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install System Dependencies (Tesseract & Poppler for OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr poppler-utils libtesseract-dev
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Install Python Release Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine wheel pytest pytest-asyncio
+          pip install -e "packages/ico-cache-py[loaders]"
+          # Demo app deps (not in core package)
+          pip install -r apps/financial-rag-demo/requirements-demo.txt
+
+      - name: Run Build & Test Gate (Step 3 Gate)
+        run: |
+          ./scripts/release_gate.sh
+
+      # Python Packaging & Publish
+      - name: Build Python Distribution (ico-cache-py)
+        run: |
+          cd packages/ico-cache-py
+          python -m build
+          twine check dist/*
+
+      - name: Publish to TestPyPI First
+        if: env.HAS_TEST_PYPI == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: |
+          twine upload --repository testpypi packages/ico-cache-py/dist/* --skip-existing
+
+      - name: TestPyPI Smoke Test
+        if: env.HAS_TEST_PYPI == 'true'
+        run: |
+          python3 -m venv testpypi_venv
+          source testpypi_venv/bin/activate
+          pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ ico-cache
+          python3 scripts/smoke_test_installed.py
+          deactivate
+          rm -rf testpypi_venv
+
+      - name: Publish to Production PyPI
+        id: pypi_prod
+        if: env.HAS_PYPI == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          twine upload packages/ico-cache-py/dist/*
+
+      # JavaScript SDK Packaging & Publish
+      - name: Build JS SDK (ico-cache-js)
+        if: env.HAS_NPM == 'true'
+        run: |
+          cd packages/ico-cache-js
+          npm ci || npm install
+          npm run build
+
+      - name: Publish to npm (Dry Run)
+        if: env.HAS_NPM == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd packages/ico-cache-js
+          npm publish --dry-run
+
+      - name: Publish to npm
+        if: env.HAS_NPM == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd packages/ico-cache-js
+          npm publish --access public
+
+      # Container Image Build & Push to GHCR
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/financial-rag-demo/docker/Dockerfile.api
+          push: true
+          provenance: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/ico-cache:latest
+            ghcr.io/${{ github.repository_owner }}/ico-cache:${{ env.RELEASE_TAG }}
+
+      # GitHub Release Generation
+      - name: Create GitHub Release with Notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/check_changelog.py --extract > RELEASE_NOTES.md
+          gh release create "${RELEASE_TAG}" \
+            --title "Release ${RELEASE_TAG}" \
+            --notes-file RELEASE_NOTES.md
+
+  fresh-install-smoke-test:
+    name: Post-Release Fresh-Install Smoke Test
+    needs: [release]
+    # Only meaningful when something was actually published to PyPI.
+    if: needs.release.outputs.published == 'success'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      HAS_NPM: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install System Dependencies for OCR
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr poppler-utils
+
+      - name: Wait for PyPI and npm index propagation
+        run: |
+          echo "Waiting 45s for index replication on PyPI and npm..."
+          sleep 45
+
+      - name: Fresh-Install Smoke Test (PyPI)
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          echo "Installing published version ico-cache==${VERSION} from PyPI..."
+          pip install --no-cache-dir "ico-cache==${VERSION}"
+          python3 scripts/smoke_test_installed.py
+
+      - name: Fresh-Install Smoke Test (npm)
+        if: env.HAS_NPM == 'true'
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          echo "Installing published version ico-cache-js@${VERSION} from npm..."
+          npm install -g "ico-cache-js@${VERSION}"
+          node scripts/smoke_test_installed_js.js
+
+      - name: Automated Rollback / Yank on Smoke Failure
+        if: failure()
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          echo "CRITICAL: Fresh-install smoke test failed post-publish!"
+          echo "Yanking release on PyPI..."
+          pip install twine
+          twine yank --version "${VERSION}" ico-cache || true
+          if [ -n "${NODE_AUTH_TOKEN}" ]; then
+            echo "Deprecating release on npm..."
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+            npm deprecate "ico-cache-js@${VERSION}" "Yanked due to automated post-release smoke test failure" || true
+          else
+            echo "NPM_TOKEN not set — skipping npm deprecation."
+          fi
+          exit 1

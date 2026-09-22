@@ -1,0 +1,93 @@
+{{- if .Values.qdrant.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-qdrant
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  serviceName: {{ include "ico-cache.fullname" . }}-qdrant
+  replicas: {{ .Values.qdrant.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: qdrant
+  template:
+    metadata:
+      labels:
+        {{- include "ico-cache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: qdrant
+    spec:
+      {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" .Values.qdrant.podSecurityContext) | nindent 6 }}
+      {{- with .Values.qdrant.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.qdrant.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.qdrant.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: qdrant
+          image: {{ include "ico-cache.image" .Values.qdrant.image | quote }}
+          imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.qdrant.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.qdrant.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.qdrant.service.grpcPort }}
+              protocol: TCP
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+            - name: snapshots
+              mountPath: /qdrant/snapshots
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+      volumes:
+        - name: snapshots
+          emptyDir: {}
+        {{- if not .Values.qdrant.persistence.enabled }}
+        - name: storage
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.qdrant.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .Values.qdrant.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.persistence.size }}
+  {{- end }}
+  {{- if .Values.qdrant.persistence.retainOnDelete }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  {{- end }}
+{{- end }}

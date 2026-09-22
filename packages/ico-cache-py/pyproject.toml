@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ico-cache"
+version = "1.0.5"
+description = "Semantic caching middleware for LLM applications: 3-tier (exact/semantic/context-aware) cache that cuts API token cost and latency by not re-running repeated prompts through the model"
+authors = [{name = "Dev"}]
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+urls = {Homepage = "https://github.com/DEV-S-SHAH/ICO", Repository = "https://github.com/DEV-S-SHAH/ICO", Documentation = "https://github.com/DEV-S-SHAH/ICO/blob/main/docs/ARCHITECTURE.md"}
+dependencies = [
+    "fastapi>=0.110.0,<1.0.0",
+    "uvicorn>=0.28.0,<1.0.0",
+    "qdrant-client>=1.8.0,<2.0.0",
+    "redis>=5.0.0,<6.0.0",
+    "fastembed>=0.2.0,<1.0.0",
+    "pydantic>=2.6.0,<3.0.0",
+    "pydantic-settings>=2.2.0,<3.0.0",
+    "pypdf>=3.0.0",
+    "beautifulsoup4>=4.12.0,<5.0.0",
+    "lancedb>=0.5.0,<1.0.0",
+    "structlog>=24.1.0,<26.0.0",
+    "litellm>=1.40.0",
+    "prometheus-client>=0.20.0,<1.0.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+]
+
+[project.optional-dependencies]
+# Document format support (used by loaders and their tests)
+loaders = [
+    "pymupdf>=1.24.0",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-python>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-go>=0.23.0",
+    "pdf2image>=1.16.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "odfpy>=1.4.1",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
+]
+# Tracing/metrics exporters
+observability = [
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+    "langfuse>=2.0.0",
+]
+# Security audit tooling (drives scripts/audit)
+audit = [
+    "bandit>=1.7.0",
+    "pip-audit>=2.6.0",
+]
+# Full dev/test environment
+dev = [
+    "ico-cache[loaders,observability,audit]",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ico_cache = ["py.typed"]
