@@ -18,7 +18,7 @@ def _sql_str(value: Any) -> str:
 
 class LanceDBStore(BaseVectorStore):
     def __init__(self, uri: str = "./lancedb"):
-        self.db = lancedb.connect(uri)
+        self.db = lancedb.connect(uri)  # type: ignore[attr-defined]
 
     def _table_names(self) -> List[str]:
         if hasattr(self.db, "list_tables"):

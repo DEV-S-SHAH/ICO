@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector payloads are JSON-encoded on write and decoded on read (LanceDB), replacing the lossy `str()` / `replace("'", '"')` round-trip.
 - Test suite: real `conftest.py` with service-free fixtures, `asyncio_mode = "auto"`, a working single-flight stampede test, and unit tests for `resolve`.
 
+## [1.0.4] - 2026-09-22
+
+### Added
+- **1-Line Embedded Cache Setup**: Added `CacheEngine.embedded(db_path="cache.db", vector_dir="./lancedb")` convenience factory for immediate zero-infra, zero-configuration local usage.
+- **Simplified Documentation**: Modernized PyPI and repository documentation with clear 30-second quickstarts, simple explanations, and prominent installation snippets.
+
 ## [1.0.3] - 2026-09-21
 
 ### Changed

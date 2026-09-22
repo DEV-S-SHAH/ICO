@@ -70,36 +70,30 @@ npm run build
 
 ## Quickstart: Zero-Infra Embedded Mode
 
-Run an entire semantic cache locally without starting Redis or Qdrant:
+Run an entire semantic cache locally in 30 seconds with **zero external services** (LanceDB, SQLite, and local FastEmbed embeddings run embedded out of the box):
 
 ```python
 import asyncio
 from ico_cache import CacheEngine
-from ico_cache.backends.vector.lancedb_store import LanceDBStore
-from ico_cache.backends.exact.sqlite_store import SQLiteStore
-from ico_cache.backends.embedding.fastembed_embedder import FastEmbedder
 
 async def main():
-    engine = CacheEngine(
-        embedder=FastEmbedder(),
-        vector_store=LanceDBStore(uri="./lancedb"),
-        exact_store=SQLiteStore(db_path="cache.db"),
-        metadata_filter_keys=["project", "topic"],
-        adaptive_threshold=True,
-    )
+    # Initialize zero-infra cache (LanceDB + SQLite + FastEmbed)
+    engine = CacheEngine.embedded()
 
+    # Query 1: Initial user question
     query = "What does the fetch_user(id) function return?"
     result = await engine.resolve(query)
 
     if result["source"] == "MISS":
         print("Cache MISS. Calling model...")
         answer = {"text": "It returns the user record matching id, or None if not found."}
+        # Save to exact (L1) and semantic (L2) cache
         engine.set_l1(query, answer)
         await engine.async_write_l2(query, answer)
     else:
         print(f"Cache HIT via {result['source']}: {result['response']}")
 
-    # Paraphrased query hits L2 semantic cache
+    # Query 2: Paraphrased query — instantly matches via L2 semantic cache!
     paraphrased = "what is the return value of fetch_user with an id?"
     hit = await engine.resolve(paraphrased)
     print(f"Paraphrased query hit: {hit['source']} -> {hit['response']}")

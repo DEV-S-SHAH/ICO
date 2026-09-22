@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ico-cache"
-version = "1.0.3"
+version = "1.0.4"
 description = "Semantic caching middleware for LLM applications: 3-tier (exact/semantic/context-aware) cache that cuts API token cost and latency by not re-running repeated prompts through the model"
 authors = [{name = "Dev"}]
 readme = "README.md"

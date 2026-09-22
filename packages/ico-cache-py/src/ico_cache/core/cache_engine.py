@@ -116,6 +116,29 @@ class CacheEngine:
             "threshold_semantic": self.thresh_semantic,
         }
 
+    @classmethod
+    def embedded(
+        cls,
+        db_path: str = "cache.db",
+        vector_dir: str = "./lancedb",
+        metadata_filter_keys: Optional[List[str]] = None,
+        adaptive_threshold: bool = True,
+        **kwargs,
+    ) -> "CacheEngine":
+        """Convenience factory: creates a zero-infra CacheEngine backed by FastEmbed, LanceDB, and SQLite."""
+        from ..backends.embedding.fastembed_embedder import FastEmbedder
+        from ..backends.vector.lancedb_store import LanceDBStore
+        from ..backends.exact.sqlite_store import SQLiteStore
+
+        return cls(
+            embedder=FastEmbedder(),
+            vector_store=LanceDBStore(uri=vector_dir),
+            exact_store=SQLiteStore(db_path=db_path),
+            metadata_filter_keys=metadata_filter_keys or [],
+            adaptive_threshold=adaptive_threshold,
+            **kwargs,
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
