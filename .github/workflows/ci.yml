@@ -14,13 +14,13 @@ jobs:
         image: redis:7-alpine
         ports:
           - 6379:6379
+        # Start redis with a password matching the test harness expectation.
         options: >-
+          --requirepass myredissecret
           --health-cmd "redis-cli -a myredissecret ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-        # Start redis with password matching test harness expectation
-        command: ["redis-server", "--requirepass", "myredissecret"]
       qdrant:
         image: qdrant/qdrant:v1.12.4
         ports:
