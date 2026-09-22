@@ -10,17 +10,6 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        # Start redis with a password matching the test harness expectation.
-        options: >-
-          --requirepass myredissecret
-          --health-cmd "redis-cli -a myredissecret ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
       qdrant:
         image: qdrant/qdrant:v1.12.4
         ports:
@@ -35,6 +24,18 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start Redis (password-protected)
+        run: |
+          docker run -d --name redis-ci -p 6379:6379 redis:7-alpine redis-server --requirepass myredissecret
+          for i in $(seq 1 30); do
+            if docker exec redis-ci redis-cli -a myredissecret ping 2>/dev/null | grep -q PONG; then
+              echo "Redis is ready after $((i*2)) attempts"
+              break
+            fi
+            sleep 1
+          done
+          docker exec redis-ci redis-cli -a myredissecret ping
 
       - name: Wait for Qdrant to be ready
         run: |
