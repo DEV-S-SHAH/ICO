@@ -50,6 +50,7 @@ ICO-Cache enforces hard metadata gating across all three layers:
 - **Centralized Extraction**: `extract_fields()` extracts `entity`, `quarter`, and canonicalized `topic` (`revenue`, `R&D`, `margins`, etc.) from incoming queries and contexts.
 - **Hard Gate Rule**: If both the incoming request and the cached record contain a value for an extracted field, and those values differ, the hit is **unconditionally blocked** regardless of vector cosine similarity score.
 - **Result**: Evaluated on benchmark near-miss sets with 0 / 100 false hits (0% false hit rate).
+- **Serving Gate**: beyond the metadata guard, `serve_threshold` (default `0.90`) blocks L2/L3 serves when cosine similarity to the logged question falls below the gate — guarding against near-identical but differently-worded questions that share metadata. L2/L3 re-serves also expire via `l2_l3_ttl` (default 3600 s) and L2 entries bind to the `in_context` they were written under.
 
 ---
 

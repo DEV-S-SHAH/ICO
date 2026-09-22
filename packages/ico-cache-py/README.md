@@ -72,7 +72,11 @@ asyncio.run(main())
 | **L3** | **Context-Aware** | Dual-vector matching for multi-turn chats & dialog context | `30–50 ms` |
 
 ### 🛡️ 0.00% False-Hit Safety
-Unlike basic vector caches that confuse queries from different quarters, topics, or tenants, `ico-cache` has a built-in `hard_gate` metadata guard that prevents cross-topic and cross-entity false positives.
+Unlike basic vector caches that confuse queries from different quarters, topics, or tenants, `ico-cache` has a built-in `hard_gate` metadata guard that prevents cross-topic and cross-entity false positives, plus a `serve_threshold` (default `0.90`) semantic gate that only serves a cached answer when the rephrased question is sufficiently similar. Recommended for RAG pipelines:
+
+```python
+engine = CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)
+```
 
 ---
 
