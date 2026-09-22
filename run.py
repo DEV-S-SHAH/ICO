@@ -7,6 +7,7 @@ Usage:
     python run.py --test         # Run full test suite (79 tests)
     python run.py --benchmark    # Run architecture benchmark (No cache vs Exact vs Semantic)
     python run.py --evaluate-docs# Run PDF and Text document evaluation
+    python run.py --cost         # Run cost analysis on the 50-query benchmark results
     python run.py --check        # Run system and environment health check
 """
 
@@ -77,6 +78,13 @@ def run_benchmark():
 def run_doc_evaluation():
     print_banner("RUNNING PDF & TEXT DOCUMENT EVALUATIONS")
     script = ROOT_DIR / "scripts" / "evaluate_documents.py"
+    res = subprocess.run([sys.executable, str(script)], cwd=str(ROOT_DIR))
+    sys.exit(res.returncode)
+
+
+def run_cost_analysis():
+    print_banner("RUNNING COST ANALYSIS (50-QUERY BENCHMARK)")
+    script = ROOT_DIR / "scripts" / "cost_analysis.py"
     res = subprocess.run([sys.executable, str(script)], cwd=str(ROOT_DIR))
     sys.exit(res.returncode)
 
@@ -158,6 +166,7 @@ def main():
     parser.add_argument("--test", action="store_true", help="Run full test suite (pytest)")
     parser.add_argument("--benchmark", action="store_true", help="Run architecture benchmark")
     parser.add_argument("--evaluate-docs", action="store_true", help="Run PDF and text document evaluations")
+    parser.add_argument("--cost", action="store_true", help="Run cost analysis on the 50-query benchmark results")
     parser.add_argument("--check", action="store_true", help="Run system and environment health check")
     parser.add_argument("--api-port", type=int, default=8000, help="Port for FastAPI (default: 8000)")
     parser.add_argument("--dashboard-port", type=int, default=8501, help="Port for Streamlit (default: 8501)")
@@ -172,6 +181,8 @@ def main():
         run_benchmark()
     elif args.evaluate_docs:
         run_doc_evaluation()
+    elif args.cost:
+        run_cost_analysis()
     elif args.api:
         run_api(args.api_port)
     elif args.dashboard:
