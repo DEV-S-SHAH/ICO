@@ -7,7 +7,7 @@ import functools
 import hashlib
 import json
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -19,6 +19,11 @@ from ..telemetry.metrics import (
     record_lookup,
 )
 from ..telemetry.tracing import trace_cache_lookup
+from .decision_engine import (
+    build_l1_key,
+    canonical_meta_suffix,
+    context_hash,
+)
 from .metadata_guard import MetadataSchema, hard_gate
 
 logger = structlog.get_logger("ico_cache.core.cache_engine")
@@ -71,6 +76,11 @@ class CacheEngine:
         l1_ttl: int = 3600,
         tenant_isolation_mode: str = "collection",  # "collection" or "payload"
         lookup_timeout: float = 2.0,
+        # Phase 3: New parameters for DecisionEngine integration
+        default_model: str = "gpt-4o",
+        default_provider: str = "openai",
+        default_prompt_version: str = "v1",
+        default_model_params: Optional[Dict[str, Any]] = None,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -98,6 +108,12 @@ class CacheEngine:
 
         self.l1_ttl = l1_ttl
         self.lookup_timeout = lookup_timeout
+
+        # Phase 3: Default identity for L1 key
+        self.default_model = default_model
+        self.default_provider = default_provider
+        self.default_prompt_version = default_prompt_version
+        self.default_model_params = default_model_params or {}
 
         self._stats_hits = 0
         self._stats_misses = 0
@@ -185,11 +201,47 @@ class CacheEngine:
             merged.update({k: v for k, v in explicit_meta.items() if v is not None})
         return merged
 
-    def _l1_key(self, query: str, meta: dict, tenant_id: str = "default") -> str:
+    def _l1_key(
+        self,
+        query: str,
+        meta: dict,
+        tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        context: Optional[str] = None,
+    ) -> str:
+        """
+        Build L1 key per Phase 3 spec:
+        {tenant_id}:l1:sha256(normalized_query + "|" + model_fingerprint + "|" + provider + "|" + prompt_version + "|" + context_hash + "|" + canonical_meta_suffix)
+        """
         normalized = self._normalize(query)
-        suffix = _canonical_meta_suffix(meta)
-        raw = normalized + suffix
-        return f"{tenant_id}:l1:" + hashlib.sha256(raw.encode()).hexdigest()
+        suffix = canonical_meta_suffix(meta)
+
+        # Use provided values or defaults
+        model = model or self.default_model
+        provider = provider or self.default_provider
+        prompt_version = prompt_version or self.default_prompt_version
+
+        # Compute model fingerprint: sha256(model + provider + deterministic_params)[:12]
+        deterministic_params = {
+            k: v for k, v in self.default_model_params.items()
+            if k in ("temperature", "top_p", "top_k", "max_tokens", "seed")
+        }
+        model_fp_raw = f"{model}|{provider}|{str(sorted(deterministic_params.items()))}"
+        model_fingerprint = hashlib.sha256(model_fp_raw.encode()).hexdigest()[:12]
+
+        context_h = context_hash(context)
+
+        return build_l1_key(
+            tenant_id=tenant_id,
+            normalized_query=normalized,
+            model_fingerprint=model_fingerprint,
+            provider=provider,
+            prompt_version=prompt_version,
+            context_hash=context_h,
+            canonical_meta_suffix=suffix,
+        )
 
     def _update_adaptive_threshold(self, hit: bool):
         if not self.adaptive_threshold:
@@ -246,10 +298,17 @@ class CacheEngine:
     # ------------------------------------------------------------------
 
     async def get_l1(
-        self, query: str, meta: Optional[dict] = None, tenant_id: str = "default"
+        self,
+        query: str,
+        meta: Optional[dict] = None,
+        tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> Optional[dict]:
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
         val = await _run_sync(self.exact_store.get, key)
         if val:
             try:
@@ -264,10 +323,14 @@ class CacheEngine:
         response: dict,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        context: Optional[str] = None,
         nx: bool = False,
     ) -> bool:
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
         return self.exact_store.set(
             key, json.dumps(response).encode(), ex=self.l1_ttl, nx=nx
         )
@@ -460,6 +523,9 @@ class CacheEngine:
         context: Optional[str] = None,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        prompt_version: Optional[str] = None,
     ):
         t0 = time.perf_counter()
 
@@ -467,7 +533,7 @@ class CacheEngine:
         with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
             t_l1_start = time.perf_counter()
             res = await self._safe_lookup(
-                "L1", self.get_l1(query, meta, tenant_id=tenant_id)
+                "L1", self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
             )
             t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
             rec_l1.record_result(hit=res is not None)
@@ -568,6 +634,9 @@ class CacheEngine:
         meta: Optional[dict] = None,
         tenant_id: str = "default",
         generate_fn=None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        prompt_version: Optional[str] = None,
     ) -> dict:
         """
         Cache lookup; on MISS, run ``generate_fn`` under single-flight so that
@@ -575,12 +644,12 @@ class CacheEngine:
         successful (cacheable) results are written, and writes are conditional
         so an already-populated entry is never overwritten.
         """
-        res = await self.resolve(query, context, meta, tenant_id=tenant_id)
+        res = await self.resolve(query, context, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version)
         if res["source"] != "MISS" or generate_fn is None:
             return res
 
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
 
         existing = self._inflight.get(key)
         if existing is not None:
@@ -592,7 +661,7 @@ class CacheEngine:
         self._inflight[key] = future
         try:
             result = await self._generate_and_store(
-                query, context, meta, tenant_id, generate_fn
+                query, context, meta, tenant_id, generate_fn, model=model, provider=provider, prompt_version=prompt_version
             )
             if not future.done():
                 future.set_result(result)
@@ -608,11 +677,11 @@ class CacheEngine:
             self._inflight.pop(key, None)
 
     async def _generate_and_store(
-        self, query, context, meta, tenant_id, generate_fn
+        self, query, context, meta, tenant_id, generate_fn, model=None, provider=None, prompt_version=None
     ) -> dict:
         # Conditional double-check: another writer may have populated the entry
         # while this coroutine was waiting to become the leader.
-        existing = await self.get_l1(query, meta, tenant_id=tenant_id)
+        existing = await self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
         if existing is not None:
             return {"source": "L1", "response": existing}
 
@@ -631,7 +700,7 @@ class CacheEngine:
             # Someone else won the race; do not overwrite.
             return {"source": "MISS", "response": generated}
 
-        await _run_sync(self.set_l1, query, generated, meta, tenant_id, True)
+        await _run_sync(self.set_l1, query, generated, meta, tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, nx=True)
         await self.async_write_l2(query, generated, meta=meta, tenant_id=tenant_id)
         if context:
             await self.async_write_l3(
@@ -706,4 +775,89 @@ class CacheEngine:
             "l2_purged": l2_purged,
             "l3_purged": l3_purged,
         }
+
+    # ------------------------------------------------------------------
+    # Phase 3: Layer-agnostic primitives for DecisionEngine
+    # ------------------------------------------------------------------
+
+    async def get_layer(self, layer: str, key: str) -> Optional[Any]:
+        """
+        Get a value from a specific cache layer by raw key.
+
+        Used by DecisionEngine for layer-agnostic lookups.
+        """
+        if layer in ("L0a", "L1", "L4", "L5", "L6", "L8", "L9"):
+            # Hot Store layers
+            val = await _run_sync(self.exact_store.get, key)
+            if val:
+                try:
+                    return json.loads(val.decode())
+                except Exception:
+                    return val
+            return None
+        elif layer in ("L0b", "L2", "L3", "L7"):
+            # Vector Store layers - not directly keyed by simple string
+            # These require vector search, not direct key lookup
+            logger.warning("get_layer not supported for vector layer", layer=layer)
+            return None
+        else:
+            logger.warning("unknown layer for get_layer", layer=layer)
+            return None
+
+    async def set_layer(self, layer: str, key: str, value: Any, ttl: int = 3600) -> bool:
+        """
+        Set a value in a specific cache layer by raw key.
+
+        Used by DecisionEngine for layer-agnostic writes.
+        """
+        if layer in ("L0a", "L1", "L4", "L5", "L6", "L8", "L9"):
+            # Hot Store layers
+            data = json.dumps(value).encode() if not isinstance(value, bytes) else value
+            return self.exact_store.set(key, data, ex=ttl)
+        elif layer in ("L0b", "L2", "L3", "L7"):
+            # Vector Store layers - not directly keyed by simple string
+            logger.warning("set_layer not supported for vector layer", layer=layer)
+            return False
+        else:
+            logger.warning("unknown layer for set_layer", layer=layer)
+            return False
+
+    async def invalidate_layer(self, layer: str, pattern: str) -> int:
+        """
+        Invalidate entries in a layer matching a pattern.
+
+        Used by DecisionEngine for layer-agnostic invalidation.
+        """
+        if layer in ("L0a", "L1", "L4", "L5", "L6", "L8", "L9"):
+            # Hot Store layers
+            if hasattr(self.exact_store, "delete_prefix"):
+                return await _run_sync(self.exact_store.delete_prefix, pattern)
+            return 0
+        elif layer in ("L0b", "L2", "L3", "L7"):
+            # Vector Store layers - need collection name from pattern
+            # Pattern format: "tenant:collection" or just "collection"
+            logger.warning("invalidate_layer for vector layer requires collection", layer=layer)
+            return 0
+        else:
+            logger.warning("unknown layer for invalidate_layer", layer=layer)
+            return 0
+
+    # Storage abstraction accessors
+    @property
+    def hot_store(self) -> BaseExactStore:
+        """Access to Hot Store (exact/operational cache)."""
+        return self.exact_store
+
+    @property
+    def vector_store_backend(self) -> BaseVectorStore:
+        """Access to Vector Store (semantic/vector cache)."""
+        return self.vector_store
+
+    @property
+    def durable_store(self):
+        """Access to Durable Store (relational/metadata memory).
+
+        Not yet implemented - returns None for now.
+        """
+        return None
 

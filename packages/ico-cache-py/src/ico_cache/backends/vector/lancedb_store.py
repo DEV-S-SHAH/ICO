@@ -107,9 +107,10 @@ class LanceDBStore(BaseVectorStore):
                     filter_tenant_id = cond.match.value
 
         class Hit:
-            def __init__(self, payload, id):
+            def __init__(self, payload, id, score=0.0):
                 self.payload = payload
                 self.id = id
+                self.score = score
 
         hits = []
         for r in res:
@@ -136,7 +137,7 @@ class LanceDBStore(BaseVectorStore):
             if filter_tenant_id and payload_dict.get("tenant_id") != filter_tenant_id:
                 continue
 
-            hits.append(Hit(payload=payload_dict, id=hid))
+            hits.append(Hit(payload=payload_dict, id=hid, score=similarity))
         return hits
 
     async def delete(self, collection: str, id: int):
