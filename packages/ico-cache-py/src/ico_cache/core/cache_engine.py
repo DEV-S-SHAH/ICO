@@ -6,8 +6,11 @@ import asyncio
 import functools
 import hashlib
 import json
+import platform
+import sys
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 import structlog
 
@@ -27,6 +30,16 @@ from .decision_engine import (
 from .metadata_guard import MetadataSchema, hard_gate
 
 logger = structlog.get_logger("ico_cache.core.cache_engine")
+
+
+@dataclass
+class DeterministicFunction:
+    """Registration for a deterministic function that can be cached."""
+    name: str
+    version: str
+    func: Callable
+    description: str = ""
+    arg_schema: Optional[Dict[str, Any]] = None
 
 # Message returned by the RAG pipeline when it refuses to answer. Never cached.
 INSUFFICIENT_CONTEXT = "Insufficient context."
@@ -122,6 +135,10 @@ class CacheEngine:
         # Single-flight: in-progress generations keyed by L1 key.
         self._inflight: dict = {}
 
+        # Phase 3: L0a Deterministic Function Cache
+        self._det_functions: Dict[str, DeterministicFunction] = {}
+        self._env_hash: str = self._compute_env_hash()
+
     def get_metrics(self) -> dict:
         total = self._stats_hits + self._stats_misses
         return {
@@ -193,6 +210,40 @@ class CacheEngine:
 
     def _normalize(self, query: str) -> str:
         return " ".join(query.lower().strip().split())
+
+    def _compute_env_hash(self) -> str:
+        """Compute environment hash for cross-environment reproducibility."""
+        parts = [
+            sys.version.split()[0],
+            platform.platform(),
+            f"deps:{hashlib.sha256(str(sorted(sys.modules.keys())).encode()).hexdigest()[:8]}",
+        ]
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+    def register_deterministic_function(
+        self,
+        name: str,
+        version: str,
+        func: Callable,
+        description: str = "",
+        arg_schema: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Register a deterministic function for L0a caching.
+
+        The function must be pure (no side effects, no external I/O, no randomness).
+        Results are cached with content-addressable keys: det:{name}:{version}:{args_hash}:{env_hash}
+        """
+        if not callable(func):
+            raise ValueError(f"Function {name} must be callable")
+        self._det_functions[name] = DeterministicFunction(
+            name=name,
+            version=version,
+            func=func,
+            description=description,
+            arg_schema=arg_schema,
+        )
+        logger.info("det_function_registered", name=name, version=version)
 
     def _auto_meta(self, text: str, explicit_meta: Optional[dict] = None) -> dict:
         auto = self.schema.extract(text) if self.schema else {}
@@ -334,6 +385,86 @@ class CacheEngine:
         return self.exact_store.set(
             key, json.dumps(response).encode(), ex=self.l1_ttl, nx=nx
         )
+
+    # ------------------------------------------------------------------
+    # L0a — Deterministic Computation Cache
+    # ------------------------------------------------------------------
+
+    def _build_l0a_key(self, fn_name: str, args: Dict[str, Any]) -> str:
+        """Build L0a deterministic function cache key."""
+        from .decision_engine import build_l0a_key
+        return build_l0a_key(fn_name, args, self._det_functions[fn_name].version, self._env_hash)
+
+    async def get_l0a(self, fn_name: str, args: Dict[str, Any]) -> Optional[Any]:
+        """Get cached result for a deterministic function."""
+        if fn_name not in self._det_functions:
+            return None
+        key = self._build_l0a_key(fn_name, args)
+        val = await _run_sync(self.exact_store.get, key)
+        if val:
+            try:
+                return json.loads(val.decode())
+            except Exception:
+                return None
+        return None
+
+    async def set_l0a(self, fn_name: str, args: Dict[str, Any], result: Any) -> bool:
+        """Cache result for a deterministic function (infinite TTL)."""
+        if fn_name not in self._det_functions:
+            return False
+        key = self._build_l0a_key(fn_name, args)
+        # Infinite TTL for content-addressable keys
+        return self.exact_store.set(key, json.dumps(result).encode(), ex=None, nx=True)
+
+    async def execute_deterministic(self, fn_name: str, args: Dict[str, Any]) -> Any:
+        """
+        Execute a deterministic function with L0a caching.
+
+        Checks cache first; on miss, executes function, caches result, returns.
+        Uses single-flight to deduplicate concurrent executions of same function+args.
+        """
+        if fn_name not in self._det_functions:
+            raise ValueError(f"Deterministic function '{fn_name}' not registered")
+
+        # Check cache
+        cached = await self.get_l0a(fn_name, args)
+        if cached is not None:
+            return cached
+
+        # Single-flight key
+        key = self._build_l0a_key(fn_name, args)
+
+        existing = self._inflight.get(key)
+        if existing is not None:
+            # Join the in-progress execution instead of starting a new one.
+            return await asyncio.shield(existing)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._inflight[key] = future
+        try:
+            # Execute function
+            func = self._det_functions[fn_name].func
+            if asyncio.iscoroutinefunction(func):
+                result = await func(**args)
+            else:
+                result = await _run_sync(func, **args)
+
+            # Cache result
+            await self.set_l0a(fn_name, args, result)
+
+            if not future.done():
+                future.set_result(result)
+            return result
+        except BaseException:
+            # Includes CancelledError. Resolve waiters (so they never hang) and
+            # re-raise for the leader. Waiters degrade to executing function again
+            # rather than sharing the failure.
+            if not future.done():
+                future.set_result(None)
+            raise
+        finally:
+            self._inflight.pop(key, None)
 
     # ------------------------------------------------------------------
     # L2 — semantic / vector

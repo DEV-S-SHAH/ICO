@@ -594,15 +594,17 @@ class DecisionEngine:
     async def _evaluate_l0a(self, ctx: DecisionContext) -> LayerEvaluation:
         """Evaluate L0a: Deterministic function cache."""
         start = time.perf_counter()
-        # L0a is for deterministic functions - not applicable to general queries yet
-        # Would check cache_engine.get_layer("L0a", key) for registered functions
+        # L0a is for specific registered deterministic functions (token counting, hashing, etc.)
+        # Not evaluated per-query; application calls cache_engine.execute_deterministic() directly
+        # Report available functions for observability
+        registered = list(self.cache_engine._det_functions.keys())
         latency = (time.perf_counter() - start) * 1000
         return LayerEvaluation(
             layer="L0a",
             checked=True,
-            hit=False,
+            hit=False,  # L0a hits are function-specific, not query-driven
             confidence=0.0,
-            reasoning="L0a not applicable to general queries; register deterministic functions to enable",
+            reasoning=f"L0a deterministic function cache: {len(registered)} functions registered ({', '.join(registered) or 'none'})",
             latency_ms=latency,
         )
 
