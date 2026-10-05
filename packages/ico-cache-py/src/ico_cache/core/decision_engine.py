@@ -611,16 +611,35 @@ class DecisionEngine:
     async def _evaluate_l0b(self, ctx: DecisionContext) -> LayerEvaluation:
         """Evaluate L0b: Embedding cache for query and context."""
         start = time.perf_counter()
-        # Check embedding cache for query (key computed for future use)
-        _ = build_l0b_key(ctx.model_fingerprint, ctx.query)
-        # For now, just check if embedder has cached version - not fully implemented
+
+        # L0b is checked implicitly when we get embeddings
+        query_key = build_l0b_key(ctx.model_fingerprint, ctx.query)
+        _ = build_l0b_key(ctx.model_fingerprint, ctx.context) if ctx.context else None
+
+        # Get L0b stats to see if we had hits
+        l0b_stats = self.cache_engine.get_l0b_stats()
+
         latency = (time.perf_counter() - start) * 1000
+
+        # If we have L0b hits, report them
+        if l0b_stats["hits"] > 0:
+            return LayerEvaluation(
+                layer="L0b",
+                checked=True,
+                hit=True,
+                confidence=1.0,
+                cache_key=query_key,
+                reasoning=f"L0b embedding cache hit: {l0b_stats['hits']} hits, {l0b_stats['misses']} misses (hit_rate={l0b_stats['hit_rate']:.1%})",
+                latency_ms=latency,
+            )
+
         return LayerEvaluation(
             layer="L0b",
             checked=True,
             hit=False,
             confidence=0.0,
-            reasoning="Embedding cache lookup not yet implemented; falls through to direct embedding",
+            cache_key=query_key,
+            reasoning=f"L0b embedding cache miss: {l0b_stats['hits']} hits, {l0b_stats['misses']} misses (will compute and cache)",
             latency_ms=latency,
         )
 

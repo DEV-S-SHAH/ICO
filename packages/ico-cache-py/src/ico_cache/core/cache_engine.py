@@ -94,6 +94,8 @@ class CacheEngine:
         default_provider: str = "openai",
         default_prompt_version: str = "v1",
         default_model_params: Optional[Dict[str, Any]] = None,
+        # Phase 3: L0b Embedding Cache
+        l0b_ttl: int = 2592000,  # 30 days
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -138,6 +140,11 @@ class CacheEngine:
         # Phase 3: L0a Deterministic Function Cache
         self._det_functions: Dict[str, DeterministicFunction] = {}
         self._env_hash: str = self._compute_env_hash()
+
+        # Phase 3: L0b Embedding Cache
+        self.l0b_ttl = l0b_ttl
+        self._l0b_stats = {"hits": 0, "misses": 0}
+        self._l0b_inflight: dict = {}  # Single-flight for L0b embeddings
 
     def get_metrics(self) -> dict:
         total = self._stats_hits + self._stats_misses
@@ -467,6 +474,104 @@ class CacheEngine:
             self._inflight.pop(key, None)
 
     # ------------------------------------------------------------------
+    # L0b — Embedding Cache
+    # ------------------------------------------------------------------
+
+    def _l0b_collection(self, tenant_id: str = "default") -> str:
+        """Get L0b embedding cache collection name."""
+        return self._coll_name("l0b_embeddings", tenant_id)
+
+    async def _setup_l0b_collection(self, tenant_id: str = "default"):
+        """Setup L0b embedding cache collection."""
+        coll = self._l0b_collection(tenant_id)
+        if self._collections_setup.get(coll):
+            return
+        try:
+            if not self.vector_store.collection_exists(coll):
+                # Get embedding dimension from embedder
+                test_emb = await _run_sync(self.embedder.embed, "test")
+                dim = len(test_emb)
+                self.vector_store.create_collection(coll, {"size": dim, "distance": "Cosine"})
+            self._collections_setup[coll] = True
+        except Exception as e:
+            logger.warning("l0b_collection_setup_failed", collection=coll, error=str(e))
+
+    def _build_l0b_key(self, model_fingerprint: str, text: str) -> str:
+        """Build L0b embedding cache key."""
+        from .decision_engine import build_l0b_key
+        return build_l0b_key(model_fingerprint, text)
+
+    async def get_embedding(self, text: str, model_fingerprint: Optional[str] = None) -> List[float]:
+        """
+        Get embedding for text, using L0b cache if available.
+
+        Checks L0b cache first; on miss, computes embedding, caches it, returns.
+        Uses single-flight protection to prevent duplicate computation.
+        """
+        if model_fingerprint is None:
+            model_fingerprint = self.embedder.model_version
+
+        _ = self._build_l0b_key(model_fingerprint, text)
+        emb_id = _stable_id("l0b", model_fingerprint, text)
+
+        # Try to get from L0b cache via get_vectors (exact ID lookup)
+        await self._setup_l0b_collection("default")
+        coll = self._l0b_collection("default")
+
+        # First try exact ID lookup
+        if hasattr(self.vector_store, "get_vectors"):
+            vectors = await self.vector_store.get_vectors(coll, [emb_id])
+            if vectors and vectors[0] is not None:
+                self._l0b_stats["hits"] += 1
+                return vectors[0]
+
+        # Single-flight protection: check if another task is already computing this embedding
+        if emb_id in self._l0b_inflight:
+            future = self._l0b_inflight[emb_id]
+            result = await future
+            if result is not None:
+                self._l0b_stats["hits"] += 1  # Count as hit since we waited for it
+                return result
+            # If result is None (failure), fall through to compute ourselves
+
+        # Create future for this computation
+        future = asyncio.Future()
+        self._l0b_inflight[emb_id] = future
+
+        try:
+            # Compute embedding
+            self._l0b_stats["misses"] += 1
+            embedding = await _run_sync(self.embedder.embed, text)
+
+            # Store in L0b cache
+            await self.vector_store.insert(
+                collection=coll,
+                id=emb_id,
+                vector=embedding,
+                payload={"model_fingerprint": model_fingerprint, "text_hash": hashlib.sha256(text.encode()).hexdigest()[:16]},
+            )
+
+            # Resolve waiters
+            if not future.done():
+                future.set_result(embedding)
+            return embedding
+        except BaseException:
+            if not future.done():
+                future.set_result(None)
+            raise
+        finally:
+            self._l0b_inflight.pop(emb_id, None)
+
+    def get_l0b_stats(self) -> dict:
+        """Get L0b embedding cache statistics."""
+        total = self._l0b_stats["hits"] + self._l0b_stats["misses"]
+        return {
+            "hits": self._l0b_stats["hits"],
+            "misses": self._l0b_stats["misses"],
+            "hit_rate": (self._l0b_stats["hits"] / total) if total > 0 else 0.0,
+        }
+
+    # ------------------------------------------------------------------
     # L2 — semantic / vector
     # ------------------------------------------------------------------
 
@@ -477,7 +582,7 @@ class CacheEngine:
         coll_l2 = self._coll_name("l2_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
-        emb = await _run_sync(self.embedder.embed, query)
+        emb = await self.get_embedding(query)
 
         hits = await self.vector_store.search(
             collection=coll_l2,
@@ -510,6 +615,8 @@ class CacheEngine:
         if self.tenant_isolation_mode == "payload":
             payload["tenant_id"] = tenant_id
 
+        emb = await self.get_embedding(query)
+
         await self.vector_store.insert(
             collection=coll_l2,
             id=_stable_id(
@@ -541,8 +648,8 @@ class CacheEngine:
         effective_meta = self._auto_meta(query, meta)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
 
-        emb_q = await _run_sync(self.embedder.embed, query)
-        emb_c = await _run_sync(self.embedder.embed, context)
+        emb_q = await self.get_embedding(query)
+        emb_c = await self.get_embedding(context)
 
         hits_q = await self.vector_store.search(
             collection=coll_l3,
@@ -607,8 +714,8 @@ class CacheEngine:
         ctx_meta = self.schema.extract(context) if self.schema else {}
         full_meta = {**effective_meta, **{k: v for k, v in ctx_meta.items() if v is not None}}
 
-        emb_q = await _run_sync(self.embedder.embed, query)
-        emb_c = await _run_sync(self.embedder.embed, context)
+        emb_q = await self.get_embedding(query)
+        emb_c = await self.get_embedding(context)
 
         payload: dict = {
             "query": query,

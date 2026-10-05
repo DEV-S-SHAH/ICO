@@ -145,6 +145,30 @@ class LanceDBStore(BaseVectorStore):
             table = self.db.open_table(collection)
             table.delete(f"id = {id}")
 
+    async def get_vectors(self, collection: str, ids: List[int]) -> List[Optional[List[float]]]:
+        """Get vectors by IDs from a collection."""
+        if collection not in self._table_names():
+            return [None] * len(ids)
+        table = self.db.open_table(collection)
+        results = []
+        for id_val in ids:
+            try:
+                # Query by ID
+                res = table.search().where(f"id = {id_val}").limit(1).to_list()
+                if res:
+                    row = res[0]
+                    # Get the vector (could be 'vector', 'vector_query', or 'vector_context')
+                    vector = row.get("vector") or row.get("vector_query") or row.get("vector_context")
+                    if vector is not None:
+                        results.append(vector)
+                    else:
+                        results.append(None)
+                else:
+                    results.append(None)
+            except Exception:
+                results.append(None)
+        return results
+
     def collection_exists(self, collection: str) -> bool:
         return collection in self._table_names()
 

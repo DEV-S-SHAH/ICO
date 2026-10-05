@@ -42,6 +42,10 @@ class FakeEmbedder:
         norm = math.sqrt(sum(v * v for v in raw)) or 1.0
         return [v / norm for v in raw]
 
+    @property
+    def model_version(self) -> str:
+        return "fake-embedder@1.0.0"
+
 
 @pytest.fixture
 def fake_embedder():

@@ -1,10 +1,25 @@
 from abc import ABC, abstractmethod
 from typing import List, Any, Optional
 
+
 class BaseEmbedder(ABC):
     @abstractmethod
     def embed(self, text: str) -> List[float]:
         pass
+
+    @property
+    @abstractmethod
+    def model_version(self) -> str:
+        """
+        Return a version string that uniquely identifies this embedding model.
+
+        Must change when model weights, architecture, tokenizer, or configuration changes.
+        Used for L0b embedding cache key to prevent cross-version reuse.
+
+        Example: "BAAI/bge-small-en-v1.5@1.0.0" or "text-embedding-3-small@2024-01-01"
+        """
+        pass
+
 
 class BaseVectorStore(ABC):
     @abstractmethod
@@ -25,6 +40,10 @@ class BaseVectorStore(ABC):
 
     @abstractmethod
     def create_collection(self, collection: str, config: Any):
+        pass
+
+    @abstractmethod
+    async def get_vectors(self, collection: str, ids: List[int]) -> List[Optional[List[float]]]:
         pass
 
     def delete_collection(self, collection: str):

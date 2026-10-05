@@ -88,3 +88,19 @@ class QdrantStore(BaseVectorStore):
         await self.aqc.delete(collection_name=collection, points_selector=models.FilterSelector(filter=q_filter))
         return len(conditions)
 
+    async def get_vectors(self, collection: str, ids: List[int]) -> List[Optional[List[float]]]:
+        """Get vectors by IDs from a collection."""
+        if not await asyncio.to_thread(self.qc.collection_exists, collection):
+            return [None] * len(ids)
+        results = []
+        for id_val in ids:
+            try:
+                res = await self.aqc.retrieve(collection_name=collection, ids=[id_val], with_vectors=True)
+                if res:
+                    results.append(res[0].vector)
+                else:
+                    results.append(None)
+            except Exception:
+                results.append(None)
+        return results
+
