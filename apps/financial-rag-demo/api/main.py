@@ -26,6 +26,7 @@ from ico_cache.telemetry.logging import configure_logging
 from ico_cache.telemetry.metrics import (
     CONTENT_TYPE_LATEST,
     record_request,
+    record_http_request,
     render_metrics,
     set_backend_up,
 )
@@ -166,7 +167,7 @@ async def request_logging_middleware(request: Request, call_next):
 
     duration_ms = (time.time() - start_time) * 1000
     response.headers["X-Request-ID"] = request_id
-    record_request(request.method, request.url.path, response.status_code)
+    record_http_request(request.method, request.url.path, response.status_code)
     logger.info(
         f"[{request_id}] END {request.method} {request.url.path} status={response.status_code} duration={duration_ms:.2f}ms"
     )

@@ -26,7 +26,7 @@ def test_metrics_endpoint_exposes_prometheus_metrics():
     response = client.get("/metrics")
     assert response.status_code == 200
     assert "text/plain" in response.headers["content-type"]
-    assert "ico_cache_http_requests_total" in response.text
+    assert "ico_cache_requests_total" in response.text
     assert "ico_cache_lookups_total" in response.text
 
 

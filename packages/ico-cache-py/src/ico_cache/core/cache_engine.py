@@ -20,8 +20,13 @@ from ..telemetry.metrics import (
     inflight_inc,
     record_generation,
     record_lookup,
+    record_tokens,
+    record_cost,
+    record_latency,
+    record_request,
 )
 from ..telemetry.tracing import trace_cache_lookup
+from ..telemetry.cost_model import CostModel, get_cost_model
 from .decision_engine import (
     build_l1_key,
     canonical_meta_suffix,
@@ -96,12 +101,17 @@ class CacheEngine:
         default_model_params: Optional[Dict[str, Any]] = None,
         # Phase 3: L0b Embedding Cache
         l0b_ttl: int = 2592000,  # 30 days
+        # Phase 3: Token + Cost Accounting
+        cost_model: Optional[CostModel] = None,
+        agent_type: str = "chatbot",
     ):
         self.embedder = embedder
         self.vector_store = vector_store
         self.exact_store = exact_store
         self.schema = schema or MetadataSchema()
         self.tenant_isolation_mode = tenant_isolation_mode
+        self.cost_model = cost_model or get_cost_model()
+        self.agent_type = agent_type
 
         if metadata_filter_keys is not None:
             self.metadata_filter_keys = metadata_filter_keys
@@ -766,6 +776,8 @@ class CacheEngine:
         prompt_version: Optional[str] = None,
     ):
         t0 = time.perf_counter()
+        model = model or self.default_model
+        provider = provider or self.default_provider
 
         # L1 Lookup
         with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
@@ -776,9 +788,12 @@ class CacheEngine:
             t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
             rec_l1.record_result(hit=res is not None)
             record_lookup("L1", res is not None, t_l1_ms / 1000)
+            record_latency("cache_lookup", "L1", t_l1_ms / 1000)
             if res:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L1"] += 1
+                # Record tokens saved on cache hit (estimate based on response size)
+                self._record_cache_hit_savings(res, tenant_id, model, provider)
                 logger.info(
                     "cache_hit",
                     layer="L1",
@@ -797,9 +812,11 @@ class CacheEngine:
             t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
             rec_l2.record_result(hit=res2 is not None)
             record_lookup("L2", res2 is not None, t_l2_ms / 1000)
+            record_latency("cache_lookup", "L2", t_l2_ms / 1000)
             if res2:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L2"] += 1
+                self._record_cache_hit_savings(res2, tenant_id, model, provider)
                 logger.info(
                     "cache_hit",
                     layer="L2",
@@ -818,9 +835,11 @@ class CacheEngine:
             t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
             rec_l3.record_result(hit=res3 is not None)
             record_lookup("L3", res3 is not None, t_l3_ms / 1000)
+            record_latency("cache_lookup", "L3", t_l3_ms / 1000)
             if res3:
                 self._update_adaptive_threshold(True)
                 self._layer_stats["L3"] += 1
+                self._record_cache_hit_savings(res3, tenant_id, model, provider)
                 logger.info(
                     "cache_hit",
                     layer="L3",
@@ -843,6 +862,28 @@ class CacheEngine:
             l3_latency_ms=round(t_l3_ms, 3),
         )
         return {"source": "MISS", "response": None}
+
+    def _record_cache_hit_savings(self, response: dict, tenant_id: str, model: str, provider: str) -> None:
+        """Record token/cost savings from a cache hit."""
+        # Estimate tokens from response (rough approximation)
+        # In production, this should come from stored token counts
+        answer = response.get("answer", "")
+        if isinstance(answer, str):
+            # Rough estimation: ~4 chars per token
+            estimated_output_tokens = max(len(answer) // 4, 1)
+            estimated_input_tokens = estimated_output_tokens * 3  # Typical ratio
+
+            # Record cached tokens
+            record_tokens("cached", estimated_input_tokens + estimated_output_tokens, tenant_id)
+            record_tokens("saved", estimated_input_tokens + estimated_output_tokens, tenant_id)
+
+            # Record cost savings
+            cost = self.cost_model.estimate_cost(provider, model, estimated_input_tokens, estimated_output_tokens)
+            if cost is not None:
+                record_cost("saved", cost, tenant_id)
+
+        # Record request with decision
+        record_request("CACHE_HIT", self.agent_type, tenant_id)
 
     # ------------------------------------------------------------------
     # Single-flight resolve-or-generate
@@ -928,7 +969,9 @@ class CacheEngine:
         try:
             generated = await generate_fn()
         finally:
-            record_generation(time.perf_counter() - t_gen)
+            gen_time = time.perf_counter() - t_gen
+            record_generation(gen_time)
+            record_latency("generation", "LLM", gen_time)
             inflight_dec()
 
         if not self._is_cacheable(generated):
@@ -938,6 +981,9 @@ class CacheEngine:
             # Someone else won the race; do not overwrite.
             return {"source": "MISS", "response": generated}
 
+        # Record actual token usage and cost from generation
+        self._record_generation_usage(generated, tenant_id, model or self.default_model, provider or self.default_provider)
+
         await _run_sync(self.set_l1, query, generated, meta, tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, nx=True)
         await self.async_write_l2(query, generated, meta=meta, tenant_id=tenant_id)
         if context:
@@ -945,6 +991,36 @@ class CacheEngine:
                 query, context, generated, meta=meta, tenant_id=tenant_id
             )
         return {"source": "MISS", "response": generated}
+
+    def _record_generation_usage(self, response: dict, tenant_id: str, model: str, provider: str) -> None:
+        """Record token usage and cost from actual LLM generation."""
+        # Try to extract usage from response (LiteLLM format or custom)
+        usage = response.get("usage") or response.get("token_usage") or {}
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+
+        # If no usage info, estimate from response
+        if total_tokens == 0:
+            answer = response.get("answer", "")
+            if isinstance(answer, str):
+                # Rough estimation
+                estimated_output = max(len(answer) // 4, 1)
+                estimated_input = estimated_output * 3
+                input_tokens = estimated_input
+                output_tokens = estimated_output
+                total_tokens = input_tokens + output_tokens
+
+        if total_tokens > 0:
+            record_tokens("input", input_tokens, tenant_id)
+            record_tokens("output", output_tokens, tenant_id)
+
+            cost = self.cost_model.estimate_cost(provider, model, input_tokens, output_tokens)
+            if cost is not None:
+                record_cost("actual", cost, tenant_id)
+
+        # Record request with decision
+        record_request("FULL_LLM_CALL", self.agent_type, tenant_id)
 
     async def invalidate(
         self, tenant_id: str = "default", filter_dict: Optional[dict] = None
