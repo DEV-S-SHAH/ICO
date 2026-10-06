@@ -14,10 +14,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from .metadata_guard import MetadataSchema, hard_gate
+from .metadata_guard import MetadataSchema, hard_gate, CRITICAL_FIELDS, GateMode
 
 if TYPE_CHECKING:
     from .cache_engine import CacheEngine
+
+
+# Phase 3 cache schema version — clean break from 2.x per ADR-012
+CACHE_SCHEMA_VERSION = 3
 
 
 async def _run_sync(fn, *args, **kwargs):
@@ -37,13 +41,6 @@ class ReuseAction(str, Enum):
     RAG_RETRIEVAL = "RAG_RETRIEVAL"
     PARTIAL_RECOMPUTE = "PARTIAL_RECOMPUTE"
     FULL_LLM_CALL = "FULL_LLM_CALL"
-
-
-class GateMode(str, Enum):
-    """Hard gate evaluation mode. AGGRESSIVE removed per ADR-005."""
-
-    STRICT = "strict"
-    BALANCED = "balanced"
 
 
 class ReusePolicy:
@@ -265,22 +262,6 @@ class CacheLayer(ABC):
 # Hard Gate Evaluation (Extended)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# CRITICAL_FIELDS per layer — always block on mismatch regardless of GateMode
-CRITICAL_FIELDS: Dict[str, List[str]] = {
-    "L0a": ["function_version", "input_hash", "env_hash"],
-    "L0b": ["embedding_model_version", "text_hash"],
-    "L1": ["tenant_id", "model_fingerprint", "provider", "prompt_version", "entity", "quarter", "topic"],
-    "L2": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version"],
-    "L3": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version", "context_hash"],
-    "L4": ["tenant_id", "collection_version", "filter_hash", "top_k", "embedding_version", "reranker_version"],
-    "L5": ["tenant_id", "chunk_content_hashes", "template_version", "token_budget", "model_fingerprint", "provider"],
-    "L6": ["tenant_id", "tool_name", "tool_version", "arg_hash", "idempotency_key"],
-    "L7": ["tenant_id", "project_id", "commit_sha", "file_hashes", "dependency_graph_version", "embedding_version"],
-    "L8": ["tenant_id", "user_id", "session_id", "consent_version"],
-    "L9": ["tenant_id", "user_id", "model_fingerprint", "provider", "params_hash", "prompt_version", "authz_version", "injected_context_hash"],
-}
-
-
 def hard_gate_extended(
     incoming: Dict[str, Any],
     cached: Dict[str, Any],
@@ -402,10 +383,10 @@ def build_l1_key(
     context_hash: str,
     canonical_meta_suffix: str,
 ) -> str:
-    """Build L1 exact prompt match key per Phase 3 spec."""
+    """Build L1 exact prompt match key per Phase 3 spec (v3 schema)."""
     raw = f"{normalized_query}|{model_fingerprint}|{provider}|{prompt_version}|{context_hash}{canonical_meta_suffix}"
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
-    return f"{tenant_id}:l1:{key_hash}"
+    return f"v3:{tenant_id}:l1:{key_hash}"
 
 
 def canonical_meta_suffix(meta: Dict[str, Any]) -> str:

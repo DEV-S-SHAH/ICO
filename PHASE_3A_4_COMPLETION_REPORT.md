@@ -26,33 +26,35 @@ The L1 key MUST contain these 7 identity components:
 
 #### 1. L1 Key Format
 ```python
-# Key format per architecture:
-{tenant_id}:l1:{sha256(normalized_query + "|" + model_fingerprint + "|" + provider + "|" + prompt_version + "|" + context_hash + "|" + canonical_meta_suffix)}
+# Key format per architecture (v3 schema):
+v3:{tenant_id}:l1:{sha256(normalized_query + "|" + model_fingerprint + "|" + provider + "|" + prompt_version + "|" + context_hash + "|" + canonical_meta_suffix)}
 ```
 
-Location: `packages/ico-cache-py/src/ico_cache/core/decision_engine.py:396` (`build_l1_key`)
+Location: `packages/ico-cache-py/src/ico_cache/core/decision_engine.py:400` (`build_l1_key`)
 
 #### 2. Identity Components - All Implemented
 
 | Component | Implementation | Location |
 |-----------|----------------|----------|
-| `tenant_id` | Key prefix | `build_l1_key` line 408 |
-| `normalized_query` | `normalize_query()` | `decision_engine.py:419` |
+| `schema_version` | v3 prefix (CACHE_SCHEMA_VERSION=3) | `decision_engine.py:25` |
+| `tenant_id` | Key prefix (after v3:) | `build_l1_key` line 412 |
+| `normalized_query` | `normalize_query()` | `decision_engine.py:423` |
 | `model_fingerprint` | `sha256(model|provider|params)[:12]` | `cache_engine.py:284-290` |
 | `provider` | Explicit parameter | `cache_engine.py:281` |
 | `prompt_version` | Explicit parameter | `cache_engine.py:282` |
-| `context_hash` | `context_hash()` | `decision_engine.py:424` |
-| `canonical_meta_suffix` | `canonical_meta_suffix()` | `decision_engine.py:411` |
+| `context_hash` | `context_hash()` | `decision_engine.py:428` |
+| `canonical_meta_suffix` | `canonical_meta_suffix()` | `decision_engine.py:415` |
 
 #### 3. Hard Gates for L1
 ```python
 CRITICAL_FIELDS["L1"] = ["tenant_id", "model_fingerprint", "provider", "prompt_version", "entity", "quarter", "topic"]
 ```
-Location: `decision_engine.py:272`
+Location: `packages/ico-cache-py/src/ico_cache/core/metadata_guard.py:55` (single source of truth, imported by decision_engine)
 
 - All CRITICAL_FIELDS block on mismatch in BOTH STRICT and BALANCED modes
 - AGGRESSIVE mode REMOVED per ADR-005
 - Only fuzzy-declared fields allowed in BALANCED mode with confidence penalty
+- Duplicate CRITICAL_FIELDS in decision_engine.py removed, now imports from metadata_guard
 
 #### 4. CacheEngine Integration
 - `get_l1()` - Lookup with full identity
@@ -71,12 +73,10 @@ Location: `decision_engine.py:272`
 
 | File | Changes |
 |------|---------|
-| `packages/ico-cache-py/tests/test_l1_exact_prompt_match.py` | **NEW** - 47 comprehensive tests covering all test matrix scenarios |
-
-**Note**: The core L1 implementation was already complete in:
-- `packages/ico-cache-py/src/ico_cache/core/cache_engine.py` - L1 key, get/set, single-flight
-- `packages/ico-cache-py/src/ico_cache/core/decision_engine.py` - Key builders, hard gates, evaluation
-- `packages/ico-cache-py/src/ico_cache/core/metadata_guard.py` - CRITICAL_FIELDS, hard_gate_extended
+| `packages/ico-cache-py/tests/test_l1_exact_prompt_match.py` | Updated test expectations for v3 key prefix |
+| `packages/ico-cache-py/src/ico_cache/core/decision_engine.py` | Added CACHE_SCHEMA_VERSION=3, updated build_l1_key to include v3 prefix, removed duplicate CRITICAL_FIELDS, imports from metadata_guard |
+| `packages/ico-cache-py/src/ico_cache/core/metadata_guard.py` | Made GateMode an Enum (was plain class) for .value attribute |
+| `packages/ico-cache-py/src/ico_cache/core/cache_engine.py` | Updated invalidate() to use v3: prefix for L1 key deletion |
 
 ---
 
@@ -177,7 +177,7 @@ All operations well within the <1ms latency target.
 
 ```bash
 git add -A
-git commit -m "phase3: 3A.4 implement L1 exact prompt identity with full contract"
+git commit -m "phase3: 3A.4 implement L1 exact prompt identity with full contract (v3 schema)"
 ```
 
 ---

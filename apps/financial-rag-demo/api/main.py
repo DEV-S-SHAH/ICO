@@ -25,7 +25,6 @@ from ico_cache.telemetry.langfuse import init_langfuse
 from ico_cache.telemetry.logging import configure_logging
 from ico_cache.telemetry.metrics import (
     CONTENT_TYPE_LATEST,
-    record_request,
     record_http_request,
     render_metrics,
     set_backend_up,

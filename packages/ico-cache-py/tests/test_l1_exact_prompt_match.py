@@ -54,7 +54,7 @@ class TestL1KeyBuilder:
     """Test L1 key building with all 7 identity components."""
 
     def test_key_format_includes_all_components(self):
-        """Key format: {tenant_id}:l1:{sha256(norm_query|model_fp|provider|prompt_ver|ctx_hash|meta)}"""
+        """Key format: v3:{tenant_id}:l1:{sha256(norm_query|model_fp|provider|prompt_ver|ctx_hash|meta)}"""
         key = build_l1_key(
             tenant_id="tenant_a",
             normalized_query="what is revenue",
@@ -64,8 +64,8 @@ class TestL1KeyBuilder:
             context_hash="ctx_hash_123",
             canonical_meta_suffix="|entity=ACME&quarter=Q1"
         )
-        assert key.startswith("tenant_a:l1:")
-        assert len(key.split(":")) == 3  # tenant_id, "l1", hash
+        assert key.startswith("v3:tenant_a:l1:")
+        assert len(key.split(":")) == 4  # "v3", tenant_id, "l1", hash
 
     def test_identical_inputs_produce_identical_key(self):
         """Same inputs must produce same key."""
@@ -78,8 +78,8 @@ class TestL1KeyBuilder:
         key1 = build_l1_key("tenant_a", "query", "fp1", "openai", "v1", "ctx1", "|entity=ACME")
         key2 = build_l1_key("tenant_b", "query", "fp1", "openai", "v1", "ctx1", "|entity=ACME")
         assert key1 != key2
-        assert key1.startswith("tenant_a:")
-        assert key2.startswith("tenant_b:")
+        assert key1.startswith("v3:tenant_a:")
+        assert key2.startswith("v3:tenant_b:")
 
     def test_different_model_fingerprint_produces_different_key(self):
         """Different model_fingerprint must produce different key."""

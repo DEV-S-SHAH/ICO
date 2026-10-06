@@ -5,11 +5,12 @@ Contains generic MetadataSchema, MetadataField, and hard_gate diffing
 independent of any specific domain or dataset vocabulary.
 """
 
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 
-class GateMode(str):
+class GateMode(str, Enum):
     """Hard gate evaluation mode. AGGRESSIVE removed per ADR-005."""
 
     STRICT = "strict"

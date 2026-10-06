@@ -1028,10 +1028,10 @@ class CacheEngine:
         """
         Purges matching entries from L1, L2, and L3 for a tenant.
         """
-        # 1. Purge L1
+        # 1. Purge L1 (v3 schema keys)
         l1_purged = 0
         if hasattr(self.exact_store, "delete_prefix"):
-            l1_purged = await _run_sync(self.exact_store.delete_prefix, f"{tenant_id}:")
+            l1_purged = await _run_sync(self.exact_store.delete_prefix, f"v3:{tenant_id}:")
 
         # 2. Purge L2
         coll_l2 = self._coll_name("l2_cache", tenant_id)
