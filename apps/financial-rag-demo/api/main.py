@@ -178,6 +178,7 @@ class QueryRequest(BaseModel):
     context: Optional[str] = None
     tenant_id: Optional[str] = None
     model: Optional[str] = None
+    corpus_version: Optional[str] = None
 
 
 class InvalidateRequest(BaseModel):
@@ -253,6 +254,9 @@ async def query_endpoint(
         )
     target_tenant = req.tenant_id or authed_tenant
 
+    # Get request ID from header (set by middleware)
+    request_id = request.headers.get("X-Request-ID")
+
     async def _generate():
         ans, t_ret, t_gen, score, citations = await rag_pipeline.generate(
             req.query, tenant_id=target_tenant, model=req.model
@@ -266,11 +270,18 @@ async def query_endpoint(
 
     # Single-flight: concurrent identical misses share one generation; error or
     # "insufficient context" results are returned but never cached.
+    # Extract provider from model string (e.g., "gemini/gemini-flash-latest" -> "gemini")
+    model_name = req.model or settings.llm_model
+    provider_name = model_name.split("/")[0] if "/" in model_name else "gemini"
     return await engine.resolve_or_generate(
         req.query,
         req.context,
         tenant_id=target_tenant,
+        model=model_name,
+        provider=provider_name,
+        corpus_version=req.corpus_version,
         generate_fn=_generate,
+        request_id=request_id,
     )
 
 
@@ -360,6 +371,47 @@ async def invalidate_endpoint(
     if stream_event_id:
         result["stream_event_id"] = stream_event_id
     return result
+
+
+@v1_router.get("/decision-traces")
+async def decision_traces_endpoint(
+    request_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    limit: int = 10,
+    authed_tenant: str = Depends(get_tenant_from_api_key),
+):
+    """
+    Retrieve decision traces for the authenticated tenant.
+
+    Query params:
+    - request_id: specific request ID to look up
+    - trace_id: specific trace ID to look up
+    - limit: maximum traces to return (default 10)
+    """
+    if trace_id:
+        trace = engine.get_decision_trace_by_id(trace_id)
+        if not trace:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        if trace.get("tenant_id") != authed_tenant:
+            raise HTTPException(status_code=403, detail="Trace belongs to different tenant")
+        return trace
+
+    if request_id:
+        trace = engine.get_decision_trace(request_id)
+        if not trace:
+            raise HTTPException(status_code=404, detail="Trace not found for request_id")
+        if trace.get("tenant_id") != authed_tenant:
+            raise HTTPException(status_code=403, detail="Trace belongs to different tenant")
+        return trace
+
+    traces = engine.get_decision_traces(tenant_id=authed_tenant, limit=limit)
+    return {"traces": traces, "count": len(traces)}
+
+
+@v1_router.get("/decision-trace-stats")
+async def decision_trace_stats_endpoint(authed_tenant: str = Depends(get_tenant_from_api_key)):
+    """Get statistics about stored decision traces for the tenant."""
+    return engine.get_decision_trace_stats()
 
 
 @v1_router.post("/eval")

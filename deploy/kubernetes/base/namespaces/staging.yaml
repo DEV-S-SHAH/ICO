@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ico-cache-staging
+  labels:
+    name: ico-cache
+    environment: staging
+    managed-by: helm
+  annotations:
+    description: "ICO-Cache staging namespace"

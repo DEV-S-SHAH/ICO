@@ -15,6 +15,7 @@ from prometheus_client import (
     generate_latest,
     REGISTRY,
 )
+from prometheus_client.metrics import MetricWrapperBase
 
 logger = logging.getLogger("ico_cache.telemetry.metrics")
 
@@ -51,16 +52,70 @@ BACKEND_UP = Gauge(
     ["backend"],
 )
 
-# Token + Cost Accounting (Phase 3A.5)
+# Token + Cost Accounting (Phase 3A.5) - Section 21 metrics
 TOKENS_TOTAL = Counter(
-    "ico_cache_tokens_total",
+    "ico_tokens_total",
     "Total tokens by type and tenant.",
     ["type", "tenant"],
 )
+# Phase 4: ico_cache_* rollup family. Labelled by ``type`` only — Prometheus sorts
+# exposition labels alphabetically, so a ``tenant`` label would render before
+# ``type``. Per-tenant attribution lives on TOKENS_TOTAL / COST_USD_TOTAL.
+ICO_CACHE_TOKENS_TOTAL = Counter(
+    "ico_cache_tokens",
+    "Total tokens by type (rollup across tenants).",
+    ["type"],
+)
+LLM_CALLS_TOTAL = Counter(
+    "ico_llm_calls_total",
+    "Total LLM calls by layer and tenant.",
+    ["layer", "tenant"],
+)
+LLM_CALLS_AVOIDED_TOTAL = Counter(
+    "ico_llm_calls_avoided_total",
+    "Total LLM calls avoided by cache layer and tenant.",
+    ["layer", "tenant"],
+)
+EMBEDDING_CALLS_TOTAL = Counter(
+    "ico_embedding_calls_total",
+    "Total embedding calls by layer and tenant.",
+    ["layer", "tenant"],
+)
+EMBEDDING_CALLS_AVOIDED_TOTAL = Counter(
+    "ico_embedding_calls_avoided_total",
+    "Total embedding calls avoided by cache layer and tenant.",
+    ["layer", "tenant"],
+)
+RETRIEVAL_CALLS_TOTAL = Counter(
+    "ico_retrieval_calls_total",
+    "Total retrieval calls by layer and tenant.",
+    ["layer", "tenant"],
+)
+RETRIEVAL_CALLS_AVOIDED_TOTAL = Counter(
+    "ico_retrieval_calls_avoided_total",
+    "Total retrieval calls avoided by cache layer and tenant.",
+    ["layer", "tenant"],
+)
 COST_USD_TOTAL = Counter(
-    "ico_cache_cost_usd_total",
+    "ico_cost_usd_total",
     "Total cost in USD by type and tenant.",
     ["type", "tenant"],
+)
+ICO_CACHE_COST_USD_TOTAL = Counter(
+    "ico_cache_cost_usd",
+    "Total cost in USD by type (rollup across tenants).",
+    ["type"],
+)
+COST_SAVED_USD_TOTAL = Counter(
+    "ico_cost_saved_usd_total",
+    "Total cost saved in USD by type and tenant.",
+    ["type", "tenant"],
+)
+LATENCY_SAVED_SECONDS = Histogram(
+    "ico_latency_saved_seconds",
+    "Latency saved in seconds by layer and tenant.",
+    ["layer", "tenant"],
+    buckets=_LATENCY_BUCKETS,
 )
 LATENCY_SECONDS = Histogram(
     "ico_cache_latency_seconds",
@@ -157,16 +212,34 @@ def inflight_dec() -> None:
 
 
 # Token + Cost Accounting helpers (Phase 3A.5)
+_DEFAULT_TOKEN_TYPES = ("input", "output", "cached", "saved", "embedding", "avoided_input", "avoided_output", "avoided_total")
+_DEFAULT_COST_TYPES = ("actual", "saved", "estimated", "avoided")
+
+
+def _init_default_children() -> None:
+    """Pre-create default metric children so a fresh /metrics scrape exposes them."""
+    try:
+        for token_type in _DEFAULT_TOKEN_TYPES:
+            TOKENS_TOTAL.labels(type=token_type, tenant="default")
+            ICO_CACHE_TOKENS_TOTAL.labels(type=token_type)
+        for cost_type in _DEFAULT_COST_TYPES:
+            COST_USD_TOTAL.labels(type=cost_type, tenant="default")
+            ICO_CACHE_COST_USD_TOTAL.labels(type=cost_type)
+    except Exception:  # pragma: no cover - metrics must never break requests
+        logger.debug("metrics._init_default_children failed", exc_info=True)
+
+
 def record_tokens(token_type: str, count: int, tenant: str = "default") -> None:
     """Record token usage.
 
     Args:
-        token_type: One of "input", "output", "cached", "saved"
+        token_type: One of "input", "output", "cached", "saved", "embedding", "avoided_input", "avoided_output", "avoided_total"
         count: Number of tokens
         tenant: Tenant identifier
     """
     try:
         TOKENS_TOTAL.labels(type=token_type, tenant=tenant).inc(count)
+        ICO_CACHE_TOKENS_TOTAL.labels(type=token_type).inc(count)
     except Exception:
         logger.debug("metrics.record_tokens failed", exc_info=True)
 
@@ -175,14 +248,29 @@ def record_cost(cost_type: str, usd: float, tenant: str = "default") -> None:
     """Record cost in USD.
 
     Args:
-        cost_type: One of "actual", "saved"
+        cost_type: One of "actual", "saved", "estimated", "avoided"
         usd: Cost in USD
         tenant: Tenant identifier
     """
     try:
         COST_USD_TOTAL.labels(type=cost_type, tenant=tenant).inc(usd)
+        ICO_CACHE_COST_USD_TOTAL.labels(type=cost_type).inc(usd)
     except Exception:
         logger.debug("metrics.record_cost failed", exc_info=True)
+
+
+def record_cost_saved(cost_type: str, usd: float, tenant: str = "default") -> None:
+    """Record cost saved in USD.
+
+    Args:
+        cost_type: Type of cost saved (e.g., "llm", "embedding", "retrieval", "total")
+        usd: Cost saved in USD
+        tenant: Tenant identifier
+    """
+    try:
+        COST_SAVED_USD_TOTAL.labels(type=cost_type, tenant=tenant).inc(usd)
+    except Exception:
+        logger.debug("metrics.record_cost_saved failed", exc_info=True)
 
 
 def record_latency(phase: str, layer: str, seconds: float) -> None:
@@ -197,6 +285,20 @@ def record_latency(phase: str, layer: str, seconds: float) -> None:
         LATENCY_SECONDS.labels(phase=phase, layer=layer).observe(max(seconds, 0.0))
     except Exception:
         logger.debug("metrics.record_latency failed", exc_info=True)
+
+
+def record_latency_saved(layer: str, tenant: str, seconds: float) -> None:
+    """Record latency saved by cache layer.
+
+    Args:
+        layer: Cache layer that saved latency
+        tenant: Tenant identifier
+        seconds: Latency saved in seconds
+    """
+    try:
+        LATENCY_SAVED_SECONDS.labels(layer=layer, tenant=tenant).observe(max(seconds, 0.0))
+    except Exception:
+        logger.debug("metrics.record_latency_saved failed", exc_info=True)
 
 
 def record_reuse_confidence(action: str, layer: str, confidence: float) -> None:
@@ -243,8 +345,93 @@ def record_false_hit_suspected(layer: str, reason: str) -> None:
         logger.debug("metrics.record_false_hit_suspected failed", exc_info=True)
 
 
+# Phase 3A.5 Accounting metric helpers
+def record_llm_call(layer: str, tenant: str = "default") -> None:
+    """Record an LLM call."""
+    try:
+        LLM_CALLS_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_llm_call failed", exc_info=True)
+
+
+def record_llm_call_avoided(layer: str, tenant: str = "default") -> None:
+    """Record an LLM call avoided by cache."""
+    try:
+        LLM_CALLS_AVOIDED_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_llm_call_avoided failed", exc_info=True)
+
+
+def record_embedding_call(layer: str, tenant: str = "default") -> None:
+    """Record an embedding call."""
+    try:
+        EMBEDDING_CALLS_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_embedding_call failed", exc_info=True)
+
+
+def record_embedding_call_avoided(layer: str, tenant: str = "default") -> None:
+    """Record an embedding call avoided by cache."""
+    try:
+        EMBEDDING_CALLS_AVOIDED_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_embedding_call_avoided failed", exc_info=True)
+
+
+def record_retrieval_call(layer: str, tenant: str = "default") -> None:
+    """Record a retrieval call."""
+    try:
+        RETRIEVAL_CALLS_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_retrieval_call failed", exc_info=True)
+
+
+def record_retrieval_call_avoided(layer: str, tenant: str = "default") -> None:
+    """Record a retrieval call avoided by cache."""
+    try:
+        RETRIEVAL_CALLS_AVOIDED_TOTAL.labels(layer=layer, tenant=tenant).inc()
+    except Exception:
+        logger.debug("metrics.record_retrieval_call_avoided failed", exc_info=True)
+
+
 def render_metrics() -> bytes:
     return generate_latest(REGISTRY)
+
+
+def reset_metrics_for_testing() -> None:
+    """Reset all metrics in place for testing.
+
+    Collectors are cleared (label sets removed, unlabeled values zeroed) but the
+    metric objects themselves are never unregistered or re-created, so any module
+    that imported a metric at collection time keeps a live, working reference.
+    Default children are re-created afterwards so scrape output stays stable.
+    """
+    seen: set[int] = set()
+    for collector in list(REGISTRY._names_to_collectors.values()):
+        if id(collector) in seen:
+            continue
+        seen.add(id(collector))
+        try:
+            if isinstance(collector, MetricWrapperBase):
+                if getattr(collector, "_labelnames", None):
+                    collector.clear()
+                else:
+                    # clear() is a no-op for unlabeled metrics; zero values in place.
+                    value = getattr(collector, "_value", None)
+                    if value is not None and hasattr(value, "set"):
+                        value.set(0.0)
+                    hist_sum = getattr(collector, "_sum", None)
+                    if hist_sum is not None and hasattr(hist_sum, "set"):
+                        hist_sum.set(0.0)
+                    for bucket in getattr(collector, "_buckets", None) or []:
+                        if hasattr(bucket, "set"):
+                            bucket.set(0.0)
+        except Exception:  # pragma: no cover - best effort
+            logger.debug("metrics.reset_metrics_for_testing failed", exc_info=True)
+    _init_default_children()
+
+
+_init_default_children()
 
 
 __all__ = [
@@ -259,9 +446,17 @@ __all__ = [
     # Token + Cost (Phase 3A.5)
     "record_tokens",
     "record_cost",
+    "record_cost_saved",
     "record_latency",
+    "record_latency_saved",
     "record_reuse_confidence",
     "record_gate_evaluation",
     "record_project_memory_staleness",
     "record_false_hit_suspected",
+    "record_llm_call",
+    "record_llm_call_avoided",
+    "record_embedding_call",
+    "record_embedding_call_avoided",
+    "record_retrieval_call",
+    "record_retrieval_call_avoided",
 ]

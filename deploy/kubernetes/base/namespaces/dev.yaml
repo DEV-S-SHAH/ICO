@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ico-cache-dev
+  labels:
+    name: ico-cache
+    environment: development
+    managed-by: helm
+  annotations:
+    description: "ICO-Cache development namespace"

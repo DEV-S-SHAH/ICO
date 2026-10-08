@@ -1,0 +1,85 @@
+# Staging environment values
+global:
+  environment: staging
+
+api:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+worker:
+  enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+
+redis:
+  enabled: true
+  persistence:
+    enabled: true
+    size: "1Gi"
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+qdrant:
+  enabled: true
+  persistence:
+    enabled: true
+    size: "5Gi"
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: staging.ico-cache.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ico-cache-staging-tls
+      hosts:
+        - staging.ico-cache.example.com
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+
+secrets:
+  create: true
+  # These should be overridden via --set or external secrets
+  redisPassword: ""
+  geminiApiKey: ""
+  qdrantApiKey: ""

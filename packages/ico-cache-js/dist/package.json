@@ -1,0 +1,34 @@
+{
+    "name": "ico-cache-js",
+    "version": "1.0.4",
+    "description": "TypeScript/JavaScript SDK for the ico-cache semantic caching middleware (L1 exact / L2 semantic / L3 context-aware lookups for LLM responses)",
+    "type": "module",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "bin": {
+        "ico-cache": "dist/cli.js"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "build": "tsc",
+        "test": "vitest run",
+        "test:ui": "vitest"
+    },
+    "dependencies": {
+        "commander": "^12.0.0",
+        "inquirer": "^10.0.0",
+        "fs-extra": "^11.0.0",
+        "chalk": "^5.0.0",
+        "ora": "^8.0.0",
+        "yaml": "^2.0.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.0.0",
+        "vitest": "^2.0.0",
+        "@types/node": "^22.0.0",
+        "@types/fs-extra": "^11.0.0",
+        "@types/inquirer": "^9.0.0"
+    }
+}

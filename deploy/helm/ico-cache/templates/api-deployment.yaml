@@ -15,6 +15,8 @@ spec:
     matchLabels:
       {{- include "ico-cache.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: api
+  strategy:
+    {{- toYaml .Values.api.strategy | nindent 2 }}
   template:
     metadata:
       labels:
@@ -38,6 +40,18 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            {{- toYaml .Values.topologySpreadConstraints.labelSelector | nindent 12 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       containers:
         - name: api
           image: {{ include "ico-cache.image" .Values.api.image | quote }}
@@ -65,6 +79,8 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           # Readiness fails when a dependency is down, pulling the pod out of rotation.
           readinessProbe:
             httpGet:
@@ -72,6 +88,7 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 3
           volumeMounts:
             - name: tmp
@@ -82,6 +99,10 @@ spec:
               mountPath: /app/data/ingest
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}

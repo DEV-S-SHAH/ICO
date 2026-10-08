@@ -18,6 +18,12 @@ spec:
       labels:
         {{- include "ico-cache.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
+      annotations:
+        {{- if .Values.redis.exporter.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+        {{- end }}
     spec:
       {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" .Values.redis.podSecurityContext) | nindent 6 }}
       {{- with .Values.redis.nodeSelector }}
@@ -32,6 +38,14 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            {{- toYaml .Values.topologySpreadConstraints.labelSelector | nindent 12 }}
+      {{- end }}
       containers:
         - name: redis
           image: {{ include "ico-cache.image" .Values.redis.image | quote }}
@@ -43,9 +57,15 @@ spec:
             - "--requirepass"
             - "$(REDIS_AUTH)"
             - "--appendonly"
-            - "yes"
+            - {{ .Values.redis.config.appendonly | quote }}
             - "--dir"
             - "/data"
+            - "--maxmemory"
+            - {{ .Values.redis.config.maxmemory | quote }}
+            - "--maxmemory-policy"
+            - {{ index .Values.redis.config "maxmemory-policy" | quote }}
+            - "--save"
+            - {{ .Values.redis.config.save | quote }}
           env:
             - name: REDIS_AUTH
               valueFrom:
@@ -64,11 +84,15 @@ spec:
               port: redis
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             tcpSocket:
               port: redis
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
       volumes:
@@ -82,7 +106,7 @@ spec:
         name: data
       spec:
         accessModes:
-          - ReadWriteOnce
+          - {{ .Values.redis.persistence.accessMode }}
         {{- with .Values.redis.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}

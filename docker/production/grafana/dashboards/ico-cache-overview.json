@@ -1,0 +1,364 @@
+{
+  "dashboard": {
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "editable": true,
+    "gnetId": null,
+    "graphTooltip": 0,
+    "id": null,
+    "links": [],
+    "panels": [
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "red", "value": 80}
+              ]
+            },
+            "unit": "percent"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "id": 1,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{job=\"ico-cache-api\"}[5m])) by (status_code) / sum(rate(http_requests_total{job=\"ico-cache-api\"}[5m])) * 100",
+            "legendFormat": "{{status_code}}",
+            "refId": "A"
+          }
+        ],
+        "title": "API Request Success Rate",
+        "type": "gauge"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "s"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "id": 2,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"ico-cache-api\"}[5m])) by (le))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"ico-cache-api\"}[5m])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"ico-cache-api\"}[5m])) by (le))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ],
+        "title": "API Request Latency",
+        "type": "timeseries"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "percent"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "id": 3,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "ico_cache_hit_rate_l1",
+            "legendFormat": "L1 Exact",
+            "refId": "A"
+          },
+          {
+            "expr": "ico_cache_hit_rate_l2",
+            "legendFormat": "L2 Semantic",
+            "refId": "B"
+          },
+          {
+            "expr": "ico_cache_hit_rate_l3",
+            "legendFormat": "L3 Context",
+            "refId": "C"
+          }
+        ],
+        "title": "Cache Hit Rates",
+        "type": "timeseries"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "reqps"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "id": 4,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{job=\"ico-cache-api\"}[5m])) by (method, path)",
+            "legendFormat": "{{method}} {{path}}",
+            "refId": "A"
+          }
+        ],
+        "title": "API Request Rate",
+        "type": "timeseries"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "bytes"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "id": 5,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "redis_memory_used_bytes{job=\"ico-cache-redis\"}",
+            "legendFormat": "Redis Used",
+            "refId": "A"
+          },
+          {
+            "expr": "redis_memory_max_bytes{job=\"ico-cache-redis\"}",
+            "legendFormat": "Redis Max",
+            "refId": "B"
+          }
+        ],
+        "title": "Redis Memory Usage",
+        "type": "timeseries"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "ops"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "id": 6,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "qdrant_collections_vectors_count{job=\"ico-cache-qdrant\"}",
+            "legendFormat": "Vectors",
+            "refId": "A"
+          },
+          {
+            "expr": "qdrant_collections_points_count{job=\"ico-cache-qdrant\"}",
+            "legendFormat": "Points",
+            "refId": "B"
+          }
+        ],
+        "title": "Qdrant Collection Stats",
+        "type": "timeseries"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {"axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": true},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null}
+              ]
+            },
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+        "id": 7,
+        "options": {
+          "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+          "tooltip": {"mode": "single", "sort": "none"}
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "kube_pod_status_ready{namespace=~\"ico-cache.*\",condition=\"true\"}",
+            "legendFormat": "{{pod}}",
+            "refId": "A"
+          }
+        ],
+        "title": "Pod Ready Status",
+        "type": "table"
+      },
+      {
+        "datasource": "Prometheus",
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 50},
+                {"color": "red", "value": 80}
+              ]
+            },
+            "unit": "percent"
+          },
+          "overrides": []
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+        "id": 8,
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "pluginVersion": "8.0.0",
+        "targets": [
+          {
+            "expr": "(1 - sum(rate(container_cpu_usage_seconds_total{namespace=~\"ico-cache.*\"}[5m])) / sum(kube_pod_container_resource_limits{resource=\"cpu\",namespace=~\"ico-cache.*\"})) * 100",
+            "legendFormat": "CPU Headroom",
+            "refId": "A"
+          }
+        ],
+        "title": "CPU Headroom",
+        "type": "gauge"
+      }
+    ],
+    "refresh": "30s",
+    "schemaVersion": 27,
+    "style": "dark",
+    "tags": ["ico-cache", "llm", "cache", "rag"],
+    "templating": {
+      "list": [
+        {
+          "current": {"selected": false, "text": "All", "value": "$__all"},
+          "datasource": "Prometheus",
+          "definition": "label_values(ico_cache_hit_rate_l1, namespace)",
+          "hide": 0,
+          "includeAll": true,
+          "label": "Namespace",
+          "multi": true,
+          "name": "namespace",
+          "options": [],
+          "query": {"query": "label_values(ico_cache_hit_rate_l1, namespace)", "refId": "StandardVariableQuery"},
+          "refresh": 1,
+          "regex": "",
+          "skipUrlSync": false,
+          "sort": 0,
+          "type": "query"
+        }
+      ]
+    },
+    "time": {"from": "now-1h", "to": "now"},
+    "timepicker": {},
+    "timezone": "",
+    "title": "ICO-Cache Overview",
+    "uid": "ico-cache-overview",
+    "version": 1,
+    "weekStart": ""
+  },
+  "folderId": 0,
+  "message": "ICO-Cache monitoring dashboard",
+  "overwrite": true
+}

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ico-cache
+  labels:
+    name: ico-cache
+    environment: production
+    managed-by: helm
+  annotations:
+    description: "ICO-Cache production namespace"

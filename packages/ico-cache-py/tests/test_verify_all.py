@@ -235,11 +235,16 @@ async def test_4_concurrency(make_engine):
         return {"answer": "Generated answer", "query": QUERY}
 
     # Ensure a cold cache for this key.
-    engine.exact_store.delete_prefix("default:")
+    TENANT = "concurrency_test"
+    engine.exact_store.delete_prefix(f"default:")
+    engine.exact_store.delete_prefix(f"v3:{TENANT}:")
+    coll = engine._coll_name("l2_cache", TENANT)
+    if engine.vector_store.qc.collection_exists(coll):
+        engine.vector_store.qc.delete_collection(coll)
 
     results = await asyncio.gather(
         *[
-            engine.resolve_or_generate(QUERY, meta=META, generate_fn=generate)
+            engine.resolve_or_generate(QUERY, meta=META, tenant_id=TENANT, generate_fn=generate)
             for _ in range(20)
         ]
     )

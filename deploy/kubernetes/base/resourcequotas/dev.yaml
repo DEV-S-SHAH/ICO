@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ico-cache-dev-quota
+  namespace: ico-cache-dev
+spec:
+  hard:
+    cpu: "2"
+    memory: "4Gi"
+    pods: "10"
+    services: "5"
+    persistentvolumeclaims: "4"
+    requests.cpu: "500m"
+    requests.memory: "1Gi"
+    limits.cpu: "2"
+    limits.memory: "4Gi"

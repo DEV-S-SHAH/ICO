@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/resourcequotas
+  - ../../base/limitranges
+
+namespace: ico-cache-staging
+
+labels:
+  - pairs:
+      environment: staging
+      managed-by: kustomize
+    includeSelectors: true
+    includeTemplates: true
+
+images:
+  - name: ico-cache-api
+    newTag: staging
+  - name: ico-cache-worker
+    newTag: staging
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ico-cache-api
+      spec:
+        replicas: 2
+        template:
+          spec:
+            containers:
+              - name: api
+                resources:
+                  limits:
+                    cpu: "1000m"
+                    memory: "1Gi"
+                  requests:
+                    cpu: "250m"
+                    memory: "512Mi"
+    target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/component=api
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ico-cache-worker
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: worker
+                resources:
+                  limits:
+                    cpu: "500m"
+                    memory: "512Mi"
+                  requests:
+                    cpu: "100m"
+                    memory: "256Mi"
+    target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/component=worker

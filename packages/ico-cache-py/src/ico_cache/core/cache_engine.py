@@ -9,7 +9,9 @@ import json
 import platform
 import sys
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import structlog
@@ -20,19 +22,37 @@ from ..telemetry.metrics import (
     inflight_inc,
     record_generation,
     record_lookup,
-    record_tokens,
-    record_cost,
     record_latency,
     record_request,
 )
 from ..telemetry.tracing import trace_cache_lookup
 from ..telemetry.cost_model import CostModel, get_cost_model
+from ..telemetry.accounting import (
+    CostCalculator,
+    DecisionAction,
+    SavingsCalculator,
+    UsageRecord,
+    UsageSource,
+    record_usage,
+)
+from .decision_trace import DecisionTraceStore
 from .decision_engine import (
     build_l1_key,
+    build_l5_key,
     canonical_meta_suffix,
+    compute_chunks_hash,
     context_hash,
 )
-from .metadata_guard import MetadataSchema, hard_gate
+from .decision_trace import (
+    DecisionOutcome,
+    LayerStatus,
+    LayerTrace,
+    begin_trace,
+    derive_outcome,
+    record_layer,
+    reset_active_trace,
+)
+from .metadata_guard import MetadataSchema, hard_gate, GateMode
 
 logger = structlog.get_logger("ico_cache.core.cache_engine")
 
@@ -104,6 +124,9 @@ class CacheEngine:
         # Phase 3: Token + Cost Accounting
         cost_model: Optional[CostModel] = None,
         agent_type: str = "chatbot",
+        # Phase 5: Decision Trace
+        enable_decision_tracing: bool = True,
+        max_decision_traces: int = 1000,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -112,6 +135,14 @@ class CacheEngine:
         self.tenant_isolation_mode = tenant_isolation_mode
         self.cost_model = cost_model or get_cost_model()
         self.agent_type = agent_type
+
+        # Phase 5: Decision Trace
+        self.enable_decision_tracing = enable_decision_tracing
+        self.decision_traces = (
+            DecisionTraceStore(max_traces=max_decision_traces)
+            if enable_decision_tracing
+            else None
+        )
 
         if metadata_filter_keys is not None:
             self.metadata_filter_keys = metadata_filter_keys
@@ -146,6 +177,7 @@ class CacheEngine:
         self._collections_setup: dict = {}
         # Single-flight: in-progress generations keyed by L1 key.
         self._inflight: dict = {}
+        self._inflight_lock = asyncio.Lock()
 
         # Phase 3: L0a Deterministic Function Cache
         self._det_functions: Dict[str, DeterministicFunction] = {}
@@ -155,6 +187,14 @@ class CacheEngine:
         self.l0b_ttl = l0b_ttl
         self._l0b_stats = {"hits": 0, "misses": 0}
         self._l0b_inflight: dict = {}  # Single-flight for L0b embeddings
+
+        # Phase 3A.5: Token + Cost Accounting
+        self._cost_calculator = CostCalculator(self.cost_model)
+        self._savings_calculator = SavingsCalculator(self._cost_calculator)
+
+        # Phase 3: L5 Context Cache
+        self._l5_stats = {"hits": 0, "misses": 0}
+        self._l5_inflight: dict = {}  # Single-flight for L5 context
 
     def get_metrics(self) -> dict:
         total = self._stats_hits + self._stats_misses
@@ -269,6 +309,24 @@ class CacheEngine:
             merged.update({k: v for k, v in explicit_meta.items() if v is not None})
         return merged
 
+    def _compute_model_fingerprint(
+        self,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Compute model fingerprint: sha256(model + provider + deterministic_params)[:12]."""
+        model = model or self.default_model
+        provider = provider or self.default_provider
+        model_params = model_params or self.default_model_params
+
+        deterministic_params = {
+            k: v for k, v in model_params.items()
+            if k in ("temperature", "top_p", "top_k", "max_tokens", "seed")
+        }
+        model_fp_raw = f"{model}|{provider}|{str(sorted(deterministic_params.items()))}"
+        return hashlib.sha256(model_fp_raw.encode()).hexdigest()[:12]
+
     def _l1_key(
         self,
         query: str,
@@ -278,6 +336,7 @@ class CacheEngine:
         provider: Optional[str] = None,
         prompt_version: Optional[str] = None,
         context: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Build L1 key per Phase 3 spec:
@@ -286,19 +345,12 @@ class CacheEngine:
         normalized = self._normalize(query)
         suffix = canonical_meta_suffix(meta)
 
-        # Use provided values or defaults
         model = model or self.default_model
         provider = provider or self.default_provider
         prompt_version = prompt_version or self.default_prompt_version
+        model_params = model_params or self.default_model_params
 
-        # Compute model fingerprint: sha256(model + provider + deterministic_params)[:12]
-        deterministic_params = {
-            k: v for k, v in self.default_model_params.items()
-            if k in ("temperature", "top_p", "top_k", "max_tokens", "seed")
-        }
-        model_fp_raw = f"{model}|{provider}|{str(sorted(deterministic_params.items()))}"
-        model_fingerprint = hashlib.sha256(model_fp_raw.encode()).hexdigest()[:12]
-
+        model_fingerprint = self._compute_model_fingerprint(model, provider, model_params)
         context_h = context_hash(context)
 
         return build_l1_key(
@@ -374,9 +426,10 @@ class CacheEngine:
         provider: Optional[str] = None,
         prompt_version: Optional[str] = None,
         context: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ) -> Optional[dict]:
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params)
         val = await _run_sync(self.exact_store.get, key)
         if val:
             try:
@@ -395,10 +448,11 @@ class CacheEngine:
         provider: Optional[str] = None,
         prompt_version: Optional[str] = None,
         context: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
         nx: bool = False,
     ) -> bool:
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params)
         return self.exact_store.set(
             key, json.dumps(response).encode(), ex=self.l1_ttl, nx=nx
         )
@@ -443,9 +497,22 @@ class CacheEngine:
         if fn_name not in self._det_functions:
             raise ValueError(f"Deterministic function '{fn_name}' not registered")
 
+        record_l0a = self.enable_decision_tracing
+        t_l0a_start = time.perf_counter()
+
         # Check cache
         cached = await self.get_l0a(fn_name, args)
         if cached is not None:
+            if record_l0a:
+                record_layer(
+                    "L0a",
+                    LayerStatus.HIT,
+                    reason=f"L0a deterministic function cache hit: {fn_name}",
+                    latency_ms=(time.perf_counter() - t_l0a_start) * 1000,
+                    hit=True,
+                    reuse_source="deterministic_function",
+                    cache_key=self._build_l0a_key(fn_name, args),
+                )
             return cached
 
         # Single-flight key
@@ -454,6 +521,16 @@ class CacheEngine:
         existing = self._inflight.get(key)
         if existing is not None:
             # Join the in-progress execution instead of starting a new one.
+            if record_l0a:
+                record_layer(
+                    "L0a",
+                    LayerStatus.HIT,
+                    reason=f"L0a deterministic function cache hit (single-flight wait): {fn_name}",
+                    latency_ms=(time.perf_counter() - t_l0a_start) * 1000,
+                    hit=True,
+                    reuse_source="deterministic_function",
+                    cache_key=key,
+                )
             return await asyncio.shield(existing)
 
         loop = asyncio.get_running_loop()
@@ -472,6 +549,15 @@ class CacheEngine:
 
             if not future.done():
                 future.set_result(result)
+            if record_l0a:
+                record_layer(
+                    "L0a",
+                    LayerStatus.MISS,
+                    reason=f"L0a deterministic function cache miss: executed {fn_name}",
+                    latency_ms=(time.perf_counter() - t_l0a_start) * 1000,
+                    hit=False,
+                    cache_key=key,
+                )
             return result
         except BaseException:
             # Includes CancelledError. Resolve waiters (so they never hang) and
@@ -479,6 +565,15 @@ class CacheEngine:
             # rather than sharing the failure.
             if not future.done():
                 future.set_result(None)
+            if record_l0a:
+                record_layer(
+                    "L0a",
+                    LayerStatus.MISS,
+                    reason=f"L0a deterministic function execution failed: {fn_name}",
+                    latency_ms=(time.perf_counter() - t_l0a_start) * 1000,
+                    hit=False,
+                    cache_key=key,
+                )
             raise
         finally:
             self._inflight.pop(key, None)
@@ -511,12 +606,20 @@ class CacheEngine:
         from .decision_engine import build_l0b_key
         return build_l0b_key(model_fingerprint, text)
 
-    async def get_embedding(self, text: str, model_fingerprint: Optional[str] = None) -> List[float]:
+    async def get_embedding(
+        self, text: str, model_fingerprint: Optional[str] = None, *, record_l0b: bool = True
+    ) -> List[float]:
         """
         Get embedding for text, using L0b cache if available.
 
         Checks L0b cache first; on miss, computes embedding, caches it, returns.
         Uses single-flight protection to prevent duplicate computation.
+
+        Args:
+            text: The text to embed.
+            model_fingerprint: Optional model fingerprint for isolation.
+            record_l0b: Whether to record this lookup in the active decision trace.
+                Should be False for write-path embeddings (e.g., async_write_l2/l3).
         """
         if model_fingerprint is None:
             model_fingerprint = self.embedder.model_version
@@ -528,11 +631,24 @@ class CacheEngine:
         await self._setup_l0b_collection("default")
         coll = self._l0b_collection("default")
 
+        t_l0b_start = time.perf_counter()
+        record_l0b = record_l0b and self.enable_decision_tracing
+
         # First try exact ID lookup
         if hasattr(self.vector_store, "get_vectors"):
             vectors = await self.vector_store.get_vectors(coll, [emb_id])
             if vectors and vectors[0] is not None:
                 self._l0b_stats["hits"] += 1
+                if record_l0b:
+                    record_layer(
+                        "L0b",
+                        LayerStatus.HIT,
+                        reason="L0b embedding cache hit",
+                        latency_ms=(time.perf_counter() - t_l0b_start) * 1000,
+                        hit=True,
+                        reuse_source="embedding_cache",
+                        cache_key=emb_id,
+                    )
                 return vectors[0]
 
         # Single-flight protection: check if another task is already computing this embedding
@@ -541,6 +657,16 @@ class CacheEngine:
             result = await future
             if result is not None:
                 self._l0b_stats["hits"] += 1  # Count as hit since we waited for it
+                if record_l0b:
+                    record_layer(
+                        "L0b",
+                        LayerStatus.HIT,
+                        reason="L0b embedding cache hit (single-flight wait)",
+                        latency_ms=(time.perf_counter() - t_l0b_start) * 1000,
+                        hit=True,
+                        reuse_source="embedding_cache",
+                        cache_key=emb_id,
+                    )
                 return result
             # If result is None (failure), fall through to compute ourselves
 
@@ -564,10 +690,28 @@ class CacheEngine:
             # Resolve waiters
             if not future.done():
                 future.set_result(embedding)
+            if record_l0b:
+                record_layer(
+                    "L0b",
+                    LayerStatus.MISS,
+                    reason="L0b embedding cache miss: computed embedding",
+                    latency_ms=(time.perf_counter() - t_l0b_start) * 1000,
+                    hit=False,
+                    cache_key=emb_id,
+                )
             return embedding
         except BaseException:
             if not future.done():
                 future.set_result(None)
+            if record_l0b:
+                record_layer(
+                    "L0b",
+                    LayerStatus.MISS,
+                    reason="L0b embedding cache miss: computation failed",
+                    latency_ms=(time.perf_counter() - t_l0b_start) * 1000,
+                    hit=False,
+                    cache_key=emb_id,
+                )
             raise
         finally:
             self._l0b_inflight.pop(emb_id, None)
@@ -586,11 +730,25 @@ class CacheEngine:
     # ------------------------------------------------------------------
 
     async def get_l2(
-        self, query: str, meta: Optional[dict] = None, tenant_id: str = "default"
+        self, query: str, meta: Optional[dict] = None, tenant_id: str = "default", corpus_version: Optional[str] = None,
+        model: Optional[str] = None, provider: Optional[str] = None, model_params: Optional[Dict[str, Any]] = None,
+        prompt_version: Optional[str] = None, context: Optional[str] = None
     ):
         await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l2 = self._coll_name("l2_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
+        # Add corpus_version to metadata for isolation
+        if corpus_version:
+            effective_meta["corpus_version"] = corpus_version
+        # Add model_fingerprint for isolation (matches CRITICAL_FIELDS for L2)
+        if model or provider:
+            effective_meta["model_fingerprint"] = self._compute_model_fingerprint(model, provider, model_params)
+        # Add prompt_version for isolation
+        if prompt_version:
+            effective_meta["prompt_version"] = prompt_version
+        # Add context_hash for isolation when context is provided
+        if context:
+            effective_meta["context_hash"] = context_hash(context)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
         emb = await self.get_embedding(query)
 
@@ -605,7 +763,12 @@ class CacheEngine:
         if hits:
             payload = hits[0].payload
             cached_meta = payload.get("meta", {})
-            if hard_gate(effective_meta, cached_meta, self.metadata_filter_keys):
+            gate_result = hard_gate(effective_meta, cached_meta, self.metadata_filter_keys, layer="L2")
+            if isinstance(gate_result, tuple):
+                allowed = gate_result[0]
+            else:
+                allowed = gate_result
+            if allowed:
                 return payload.get("answer")
         return None
 
@@ -615,17 +778,35 @@ class CacheEngine:
         generated: dict,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
+        corpus_version: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+        prompt_version: Optional[str] = None,
+        context: Optional[str] = None,
     ):
         await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l2 = self._coll_name("l2_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
+        # Add corpus_version to metadata for isolation
+        if corpus_version:
+            effective_meta["corpus_version"] = corpus_version
+        # Add model_fingerprint for isolation (matches CRITICAL_FIELDS for L2)
+        if model or provider:
+            effective_meta["model_fingerprint"] = self._compute_model_fingerprint(model, provider, model_params)
+        # Add prompt_version for isolation
+        if prompt_version:
+            effective_meta["prompt_version"] = prompt_version
+        # Add context_hash for isolation when context is provided
+        if context:
+            effective_meta["context_hash"] = context_hash(context)
         emb = await _run_sync(self.embedder.embed, query)
 
         payload: dict = {"query": query, "answer": generated, "meta": effective_meta}
         if self.tenant_isolation_mode == "payload":
             payload["tenant_id"] = tenant_id
 
-        emb = await self.get_embedding(query)
+        emb = await self.get_embedding(query, record_l0b=False)
 
         await self.vector_store.insert(
             collection=coll_l2,
@@ -649,6 +830,10 @@ class CacheEngine:
         context: str,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
+        corpus_version: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ):
         await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l3 = self._coll_name("l3_cache", tenant_id)
@@ -656,6 +841,12 @@ class CacheEngine:
             return None
 
         effective_meta = self._auto_meta(query, meta)
+        # Add corpus_version to metadata for isolation
+        if corpus_version:
+            effective_meta["corpus_version"] = corpus_version
+        # Add model_fingerprint for isolation (matches CRITICAL_FIELDS for L3)
+        if model or provider:
+            effective_meta["model_fingerprint"] = self._compute_model_fingerprint(model, provider, model_params)
         q_filter = self.build_meta_filter(effective_meta, tenant_id=tenant_id)
 
         emb_q = await self.get_embedding(query)
@@ -706,7 +897,9 @@ class CacheEngine:
                     **{k: v for k, v in incoming_ctx_meta.items() if v is not None},
                 }
 
-                if hard_gate(full_incoming_meta, full_cached_meta, self.metadata_filter_keys):
+                gate_result = hard_gate(full_incoming_meta, full_cached_meta, self.metadata_filter_keys, layer="L3")
+                allowed = gate_result[0] if isinstance(gate_result, tuple) else gate_result
+                if allowed:
                     return cached_payload.get("answer")
         return None
 
@@ -717,15 +910,26 @@ class CacheEngine:
         generated: dict,
         meta: Optional[dict] = None,
         tenant_id: str = "default",
+        corpus_version: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
     ):
         await _run_sync(self._setup_collections, tenant_id=tenant_id)
         coll_l3 = self._coll_name("l3_cache", tenant_id)
         effective_meta = self._auto_meta(query, meta)
         ctx_meta = self.schema.extract(context) if self.schema else {}
         full_meta = {**effective_meta, **{k: v for k, v in ctx_meta.items() if v is not None}}
+        # Add corpus_version to metadata for isolation
+        if corpus_version:
+            full_meta["corpus_version"] = corpus_version
+        # Add model_fingerprint for isolation (matches CRITICAL_FIELDS for L3)
+        if model or provider:
+            full_meta["model_fingerprint"] = self._compute_model_fingerprint(model, provider, model_params)
+            full_meta["corpus_version"] = corpus_version
 
-        emb_q = await self.get_embedding(query)
-        emb_c = await self.get_embedding(context)
+        emb_q = await self.get_embedding(query, record_l0b=False)
+        emb_c = await self.get_embedding(context, record_l0b=False)
 
         payload: dict = {
             "query": query,
@@ -748,6 +952,10 @@ class CacheEngine:
             vector={"query": emb_q, "context": emb_c},
             payload=payload,
         )
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough token estimation: ~4 chars per token."""
+        return max(len(text) // 4, 1)
 
     # ------------------------------------------------------------------
     # Public resolve
@@ -774,115 +982,239 @@ class CacheEngine:
         model: Optional[str] = None,
         provider: Optional[str] = None,
         prompt_version: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+        corpus_version: Optional[str] = None,
     ):
         t0 = time.perf_counter()
         model = model or self.default_model
         provider = provider or self.default_provider
+        model_params = model_params or self.default_model_params
 
-        # L1 Lookup
-        with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
-            t_l1_start = time.perf_counter()
-            res = await self._safe_lookup(
-                "L1", self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
+        # Phase 5: Decision Trace - start or join active trace
+        trace, token, created = (None, None, False)
+        if self.enable_decision_tracing:
+            trace, token, created = begin_trace(
+                tenant_id=tenant_id, query=query, model=model, provider=provider
             )
-            t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
-            rec_l1.record_result(hit=res is not None)
-            record_lookup("L1", res is not None, t_l1_ms / 1000)
-            record_latency("cache_lookup", "L1", t_l1_ms / 1000)
-            if res:
-                self._update_adaptive_threshold(True)
-                self._layer_stats["L1"] += 1
-                # Record tokens saved on cache hit (estimate based on response size)
-                self._record_cache_hit_savings(res, tenant_id, model, provider)
-                logger.info(
-                    "cache_hit",
-                    layer="L1",
-                    tenant_id=tenant_id,
-                    query=query,
-                    latency_ms=round(t_l1_ms, 3),
-                )
-                return {"source": "L1", "response": res}
 
-        # L2 Lookup
-        with trace_cache_lookup("L2", tenant_id=tenant_id, query=query) as rec_l2:
-            t_l2_start = time.perf_counter()
-            res2 = await self._safe_lookup(
-                "L2", self.get_l2(query, meta, tenant_id=tenant_id)
+        try:
+            # L1 Lookup
+            with trace_cache_lookup("L1", tenant_id=tenant_id, query=query) as rec_l1:
+                t_l1_start = time.perf_counter()
+                res = await self._safe_lookup(
+                    "L1", self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params)
+                )
+                t_l1_ms = (time.perf_counter() - t_l1_start) * 1000
+                rec_l1.record_result(hit=res is not None)
+                record_lookup("L1", res is not None, t_l1_ms / 1000)
+                record_latency("cache_lookup", "L1", t_l1_ms / 1000)
+                if trace is not None:
+                    record_layer(
+                        "L1",
+                        LayerStatus.HIT if res else LayerStatus.MISS,
+                        reason="L1 exact match" if res else "L1 exact key miss",
+                        latency_ms=t_l1_ms,
+                        hit=res is not None,
+                        reuse_source="exact_match" if res else None,
+                        cache_key=res.get("_l1_key") if res else None,
+                    )
+                if res:
+                    self._update_adaptive_threshold(True)
+                    self._layer_stats["L1"] += 1
+                    # Record tokens saved on cache hit (estimate based on response size)
+                    self._record_cache_hit_savings(res, tenant_id, model, provider)
+                    logger.info(
+                        "cache_hit",
+                        layer="L1",
+                        tenant_id=tenant_id,
+                        query=query,
+                        latency_ms=round(t_l1_ms, 3),
+                    )
+                    if trace is not None and created:
+                        trace.finalize(
+                            DecisionOutcome.CACHE_RESPONSE,
+                            final_layer="L1",
+                            final_confidence=1.0,
+                            final_reason="L1 exact match",
+                        )
+                        if self.decision_traces is not None:
+                            self.decision_traces.store(trace)
+                    return {"source": "L1", "response": res}
+
+            # L2 Lookup
+            with trace_cache_lookup("L2", tenant_id=tenant_id, query=query) as rec_l2:
+                t_l2_start = time.perf_counter()
+                res2 = await self._safe_lookup(
+                    "L2", self.get_l2(query, meta, tenant_id=tenant_id, corpus_version=corpus_version, model=model, provider=provider, model_params=model_params, prompt_version=prompt_version, context=context)
+                )
+                t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
+                rec_l2.record_result(hit=res2 is not None)
+                record_lookup("L2", res2 is not None, t_l2_ms / 1000)
+                record_latency("cache_lookup", "L2", t_l2_ms / 1000)
+                if trace is not None:
+                    record_layer(
+                        "L2",
+                        LayerStatus.HIT if res2 else LayerStatus.MISS,
+                        reason="L2 semantic match" if res2 else "L2 no candidates above threshold",
+                        latency_ms=t_l2_ms,
+                        hit=res2 is not None,
+                        reuse_source="semantic_match" if res2 else None,
+                    )
+                if res2:
+                    self._update_adaptive_threshold(True)
+                    self._layer_stats["L2"] += 1
+                    self._record_cache_hit_savings(res2, tenant_id, model, provider)
+                    logger.info(
+                        "cache_hit",
+                        layer="L2",
+                        tenant_id=tenant_id,
+                        query=query,
+                        latency_ms=round(t_l2_ms, 3),
+                    )
+                    if trace is not None and created:
+                        trace.finalize(
+                            DecisionOutcome.CACHE_RESPONSE,
+                            final_layer="L2",
+                            final_confidence=1.0,
+                            final_reason="L2 semantic match",
+                        )
+                        if self.decision_traces is not None:
+                            self.decision_traces.store(trace)
+                    return {"source": "L2", "response": res2}
+
+            # L3 Lookup
+            with trace_cache_lookup("L3", tenant_id=tenant_id, query=query) as rec_l3:
+                t_l3_start = time.perf_counter()
+                res3 = await self._safe_lookup(
+                    "L3", self.get_l3(query, context, meta, tenant_id=tenant_id, corpus_version=corpus_version, model=model, provider=provider, model_params=model_params)
+                )
+                t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
+                rec_l3.record_result(hit=res3 is not None)
+                record_lookup("L3", res3 is not None, t_l3_ms / 1000)
+                record_latency("cache_lookup", "L3", t_l3_ms / 1000)
+                if trace is not None:
+                    record_layer(
+                        "L3",
+                        LayerStatus.HIT if res3 else LayerStatus.MISS,
+                        reason="L3 context match" if res3 else "L3 no context match",
+                        latency_ms=t_l3_ms,
+                        hit=res3 is not None,
+                        reuse_source="context_match" if res3 else None,
+                    )
+                if res3:
+                    self._update_adaptive_threshold(True)
+                    self._layer_stats["L3"] += 1
+                    self._record_cache_hit_savings(res3, tenant_id, model, provider)
+                    logger.info(
+                        "cache_hit",
+                        layer="L3",
+                        tenant_id=tenant_id,
+                        query=query,
+                        latency_ms=round(t_l3_ms, 3),
+                    )
+                    if trace is not None and created:
+                        trace.finalize(
+                            DecisionOutcome.CACHE_RESPONSE,
+                            final_layer="L3",
+                            final_confidence=1.0,
+                            final_reason="L3 context match",
+                        )
+                        if self.decision_traces is not None:
+                            self.decision_traces.store(trace)
+                    return {"source": "L3", "response": res3}
+
+            total_ms = (time.perf_counter() - t0) * 1000
+            self._update_adaptive_threshold(False)
+            self._layer_stats["MISS"] += 1
+            logger.info(
+                "cache_miss",
+                tenant_id=tenant_id,
+                query=query,
+                total_latency_ms=round(total_ms, 3),
+                l1_latency_ms=round(t_l1_ms, 3),
+                l2_latency_ms=round(t_l2_ms, 3),
+                l3_latency_ms=round(t_l3_ms, 3),
             )
-            t_l2_ms = (time.perf_counter() - t_l2_start) * 1000
-            rec_l2.record_result(hit=res2 is not None)
-            record_lookup("L2", res2 is not None, t_l2_ms / 1000)
-            record_latency("cache_lookup", "L2", t_l2_ms / 1000)
-            if res2:
-                self._update_adaptive_threshold(True)
-                self._layer_stats["L2"] += 1
-                self._record_cache_hit_savings(res2, tenant_id, model, provider)
-                logger.info(
-                    "cache_hit",
-                    layer="L2",
-                    tenant_id=tenant_id,
-                    query=query,
-                    latency_ms=round(t_l2_ms, 3),
+            if trace is not None and created:
+                trace.finalize(
+                    DecisionOutcome.GENERATE_LLM,
+                    final_layer=None,
+                    final_confidence=0.0,
+                    final_reason="All cache layers missed; LLM generation required",
                 )
-                return {"source": "L2", "response": res2}
+                if self.decision_traces is not None:
+                    self.decision_traces.store(trace)
+            return {"source": "MISS", "response": None}
+        finally:
+            if token is not None:
+                reset_active_trace(token)
 
-        # L3 Lookup
-        with trace_cache_lookup("L3", tenant_id=tenant_id, query=query) as rec_l3:
-            t_l3_start = time.perf_counter()
-            res3 = await self._safe_lookup(
-                "L3", self.get_l3(query, context, meta, tenant_id=tenant_id)
+    def _record_cache_hit_savings(self, response: dict, tenant_id: str, model: str, provider: str, layer: str = "L1") -> None:
+        """Record token/cost savings from a cache hit using SavingsCalculator."""
+        # Extract token usage from response
+        usage = response.get("usage") or response.get("token_usage") or {}
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+
+        if input_tokens == 0 and output_tokens == 0:
+            # Fallback: estimate from response text
+            answer = response.get("answer", "")
+            if isinstance(answer, str):
+                estimated_output = max(len(answer) // 4, 1)
+                estimated_input = estimated_output * 3
+                input_tokens = estimated_input
+                output_tokens = estimated_output
+
+        if input_tokens > 0 or output_tokens > 0:
+            # Calculate savings using SavingsCalculator
+            savings = self._savings_calculator.calculate_savings(
+                layer=layer,
+                decision_action=DecisionAction.EXACT_REUSE if layer == "L1" else (DecisionAction.SEMANTIC_REUSE if layer == "L2" else DecisionAction.CONTEXT_REUSE),
+                provider=provider,
+                model=model,
+                baseline_input_tokens=input_tokens,
+                baseline_output_tokens=output_tokens,
+                actual_input_tokens=0,
+                actual_output_tokens=0,
+                actual_latency_ms=0.0,
             )
-            t_l3_ms = (time.perf_counter() - t_l3_start) * 1000
-            rec_l3.record_result(hit=res3 is not None)
-            record_lookup("L3", res3 is not None, t_l3_ms / 1000)
-            record_latency("cache_lookup", "L3", t_l3_ms / 1000)
-            if res3:
-                self._update_adaptive_threshold(True)
-                self._layer_stats["L3"] += 1
-                self._record_cache_hit_savings(res3, tenant_id, model, provider)
-                logger.info(
-                    "cache_hit",
-                    layer="L3",
-                    tenant_id=tenant_id,
-                    query=query,
-                    latency_ms=round(t_l3_ms, 3),
-                )
-                return {"source": "L3", "response": res3}
 
-        total_ms = (time.perf_counter() - t0) * 1000
-        self._update_adaptive_threshold(False)
-        self._layer_stats["MISS"] += 1
-        logger.info(
-            "cache_miss",
-            tenant_id=tenant_id,
-            query=query,
-            total_latency_ms=round(total_ms, 3),
-            l1_latency_ms=round(t_l1_ms, 3),
-            l2_latency_ms=round(t_l2_ms, 3),
-            l3_latency_ms=round(t_l3_ms, 3),
-        )
-        return {"source": "MISS", "response": None}
+            avoided_input = savings["avoided_input_tokens"]
+            avoided_output = savings["avoided_output_tokens"]
+            avoided_total = savings["avoided_total_tokens"]
+            cost_saved = savings["cost_saved"]
 
-    def _record_cache_hit_savings(self, response: dict, tenant_id: str, model: str, provider: str) -> None:
-        """Record token/cost savings from a cache hit."""
-        # Estimate tokens from response (rough approximation)
-        # In production, this should come from stored token counts
-        answer = response.get("answer", "")
-        if isinstance(answer, str):
-            # Rough estimation: ~4 chars per token
-            estimated_output_tokens = max(len(answer) // 4, 1)
-            estimated_input_tokens = estimated_output_tokens * 3  # Typical ratio
+            # Emit UsageRecord for cache hit using factory method (handles cost_saved metrics)
+            decision_action = DecisionAction.EXACT_REUSE if layer == "L1" else (DecisionAction.SEMANTIC_REUSE if layer == "L2" else DecisionAction.CONTEXT_REUSE)
+            record = UsageRecord(
+                request_id=str(uuid.uuid4()),
+                trace_id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                timestamp=datetime.now(timezone.utc),
+                layer=layer,
+                decision_action=decision_action,
+                cache_hit=1,
+                cache_miss=0,
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                cached_input_tokens=avoided_input,
+                avoided_input_tokens=avoided_input,
+                avoided_output_tokens=avoided_output,
+                avoided_total_tokens=avoided_total,
+                estimated_cost=0.0,
+                actual_cost=0.0,
+                tokens_saved=avoided_total,
+                cost_saved=cost_saved,
+                latency_saved=0.0,
+                latency_ms=0.0,
+                model=model,
+                provider=provider,
+                success=True,
+                usage_source=UsageSource.PROVIDER_RESPONSE,
+            )
+            record_usage(record)
 
-            # Record cached tokens
-            record_tokens("cached", estimated_input_tokens + estimated_output_tokens, tenant_id)
-            record_tokens("saved", estimated_input_tokens + estimated_output_tokens, tenant_id)
-
-            # Record cost savings
-            cost = self.cost_model.estimate_cost(provider, model, estimated_input_tokens, estimated_output_tokens)
-            if cost is not None:
-                record_cost("saved", cost, tenant_id)
-
-        # Record request with decision
         record_request("CACHE_HIT", self.agent_type, tenant_id)
 
     # ------------------------------------------------------------------
@@ -916,51 +1248,170 @@ class CacheEngine:
         model: Optional[str] = None,
         provider: Optional[str] = None,
         prompt_version: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+        corpus_version: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> dict:
         """
         Cache lookup; on MISS, run ``generate_fn`` under single-flight so that
         concurrent identical misses trigger exactly one generation. Only
         successful (cacheable) results are written, and writes are conditional
         so an already-populated entry is never overwritten.
+
+        Phase 5: records a DecisionTrace (L0a → L0b → L1 → L2 → L3 → L4 → L5 → LLM)
+        retrievable via :meth:`get_decision_trace` with the provided ``request_id``.
         """
-        res = await self.resolve(query, context, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version)
-        if res["source"] != "MISS" or generate_fn is None:
-            return res
-
         effective_meta = self._auto_meta(query, meta)
-        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
+        key = self._l1_key(query, effective_meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params)
 
-        existing = self._inflight.get(key)
-        if existing is not None:
-            # Join the in-progress generation instead of starting a new one.
-            return await asyncio.shield(existing)
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        self._inflight[key] = future
-        try:
-            result = await self._generate_and_store(
-                query, context, meta, tenant_id, generate_fn, model=model, provider=provider, prompt_version=prompt_version
+        # Phase 5: Decision Trace - start trace for the request
+        trace, token, created = (None, None, False)
+        if self.enable_decision_tracing:
+            trace, token, created = begin_trace(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                query=query,
+                model=model or self.default_model,
+                provider=provider or self.default_provider,
             )
-            if not future.done():
-                future.set_result(result)
-            return result
-        except BaseException:
-            # Includes CancelledError. Resolve waiters (so they never hang) and
-            # re-raise for the leader. Waiters degrade to a miss rather than
-            # sharing the failure.
-            if not future.done():
-                future.set_result({"source": "MISS", "response": None})
-            raise
-        finally:
-            self._inflight.pop(key, None)
+
+        # Single-flight: check if there's already an in-flight generation for this key
+        # Do this BEFORE any cache lookups to ensure true single-flight
+        async with self._inflight_lock:
+            existing = self._inflight.get(key)
+            if existing is not None:
+                # Waiter path: join the in-progress generation
+                if trace is not None and created:
+                    # Record waiter layers (all skipped) and LLM wait time
+                    t_wait_start = time.perf_counter()
+                    result = await asyncio.shield(existing)
+                    wait_ms = (time.perf_counter() - t_wait_start) * 1000
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L0a", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L0b", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L1", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L2", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L3", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L4", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="L5", status=LayerStatus.SKIPPED, reason="Joined in-flight generation (single-flight dedup)"
+                        )
+                    )
+                    trace.add_layer_trace(
+                        LayerTrace(
+                            layer="LLM",
+                            status=LayerStatus.ATTEMPTED,
+                            reason="Response shared from in-flight generation (single-flight)",
+                            latency_ms=wait_ms,
+                            hit=False,
+                            metadata={"single_flight": "waiter"},
+                        )
+                    )
+                    trace.finalize(
+                        DecisionOutcome.GENERATE_LLM,
+                        final_layer=None,
+                        final_confidence=0.0,
+                        final_reason="Response shared from in-flight LLM generation (single-flight leader)",
+                    )
+                    if self.decision_traces is not None:
+                        self.decision_traces.store(trace)
+                else:
+                    result = await asyncio.shield(existing)
+                if token is not None:
+                    reset_active_trace(token)
+                return result
+
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            self._inflight[key] = future
+
+            try:
+                # Leader does cache lookups while holding the lock to prevent
+                # other tasks from becoming leaders.
+                res = await self.resolve(query, context, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, model_params=model_params, corpus_version=corpus_version)
+                if res["source"] != "MISS" or generate_fn is None:
+                    if not future.done():
+                        future.set_result(res)
+                    if trace is not None and created:
+                        trace.finalize(
+                            DecisionOutcome.CACHE_RESPONSE,
+                            final_layer=res["source"],
+                            final_confidence=1.0,
+                            final_reason=f"Cache hit at {res['source']}",
+                        )
+                        if self.decision_traces is not None:
+                            self.decision_traces.store(trace)
+                    return res
+
+                result = await self._generate_and_store(
+                    query, context, meta, tenant_id, generate_fn, model=model, provider=provider, prompt_version=prompt_version, model_params=model_params, corpus_version=corpus_version
+                )
+                if not future.done():
+                    future.set_result(result)
+                if trace is not None and created:
+                    # LLM layer recorded in _generate_and_store
+                    # RAG L4/L5 layers recorded in RAGPipeline if active trace exists
+                    final_outcome = derive_outcome(trace)
+                    trace.finalize(
+                        final_outcome,
+                        final_layer=result["source"] if result["source"] != "MISS" else None,
+                        final_confidence=1.0 if result["source"] != "MISS" else 0.0,
+                        final_reason=f"Generated with LLM (source: {result['source']})",
+                    )
+                    if self.decision_traces is not None:
+                        self.decision_traces.store(trace)
+                return result
+            except BaseException:
+                # Includes CancelledError. Resolve waiters (so they never hang) and
+                # re-raise for the leader. Waiters degrade to a miss rather than
+                # sharing the failure.
+                if not future.done():
+                    future.set_result({"source": "MISS", "response": None})
+                if trace is not None and created:
+                    trace.finalize(
+                        DecisionOutcome.GENERATE_LLM,
+                        final_layer=None,
+                        final_confidence=0.0,
+                        final_reason="Exception during resolution/generation",
+                    )
+                    if self.decision_traces is not None:
+                        self.decision_traces.store(trace)
+                raise
+            finally:
+                self._inflight.pop(key, None)
+                if token is not None:
+                    reset_active_trace(token)
 
     async def _generate_and_store(
-        self, query, context, meta, tenant_id, generate_fn, model=None, provider=None, prompt_version=None
+        self, query, context, meta, tenant_id, generate_fn, model=None, provider=None, prompt_version=None, model_params=None, corpus_version=None
     ) -> dict:
         # Conditional double-check: another writer may have populated the entry
         # while this coroutine was waiting to become the leader.
-        existing = await self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context)
+        existing = await self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params)
         if existing is not None:
             return {"source": "L1", "response": existing}
 
@@ -973,28 +1424,37 @@ class CacheEngine:
             record_generation(gen_time)
             record_latency("generation", "LLM", gen_time)
             inflight_dec()
+            # Phase 5: Record LLM layer in active trace
+            record_layer(
+                "LLM",
+                LayerStatus.ATTEMPTED,
+                reason="LLM generation completed",
+                latency_ms=gen_time * 1000,
+                hit=False,
+                metadata={"success": True},
+            )
 
         if not self._is_cacheable(generated):
             return {"source": "MISS", "response": generated}
 
-        if await self.get_l1(query, meta, tenant_id=tenant_id) is not None:
+        if await self.get_l1(query, meta, tenant_id=tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params) is not None:
             # Someone else won the race; do not overwrite.
             return {"source": "MISS", "response": generated}
 
         # Record actual token usage and cost from generation
         self._record_generation_usage(generated, tenant_id, model or self.default_model, provider or self.default_provider)
 
-        await _run_sync(self.set_l1, query, generated, meta, tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, nx=True)
-        await self.async_write_l2(query, generated, meta=meta, tenant_id=tenant_id)
+        await _run_sync(self.set_l1, query, generated, meta, tenant_id, model=model, provider=provider, prompt_version=prompt_version, context=context, model_params=model_params, nx=True)
+        await self.async_write_l2(query, generated, meta=meta, tenant_id=tenant_id, corpus_version=corpus_version, model=model, provider=provider, model_params=model_params, prompt_version=prompt_version, context=context)
         if context:
             await self.async_write_l3(
-                query, context, generated, meta=meta, tenant_id=tenant_id
+                query, context, generated, meta=meta, tenant_id=tenant_id, corpus_version=corpus_version, model=model, provider=provider, model_params=model_params
             )
         return {"source": "MISS", "response": generated}
 
     def _record_generation_usage(self, response: dict, tenant_id: str, model: str, provider: str) -> None:
-        """Record token usage and cost from actual LLM generation."""
-        # Try to extract usage from response (LiteLLM format or custom)
+        """Record token usage and cost from actual LLM generation using CostCalculator."""
+        # Extract token usage from response
         usage = response.get("usage") or response.get("token_usage") or {}
         input_tokens = usage.get("prompt_tokens", 0)
         output_tokens = usage.get("completion_tokens", 0)
@@ -1012,12 +1472,34 @@ class CacheEngine:
                 total_tokens = input_tokens + output_tokens
 
         if total_tokens > 0:
-            record_tokens("input", input_tokens, tenant_id)
-            record_tokens("output", output_tokens, tenant_id)
+            cost = self._cost_calculator.calculate(provider, model, input_tokens, output_tokens)
 
-            cost = self.cost_model.estimate_cost(provider, model, input_tokens, output_tokens)
-            if cost is not None:
-                record_cost("actual", cost, tenant_id)
+            # Emit UsageRecord for generation using factory method (handles metrics emission)
+            record = UsageRecord(
+                request_id=str(uuid.uuid4()),
+                trace_id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                timestamp=datetime.now(timezone.utc),
+                layer="NONE",
+                decision_action=DecisionAction.FULL_LLM_CALL,
+                cache_hit=0,
+                cache_miss=1,
+                llm_called=1,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=0.0,
+                actual_cost=cost or 0.0,
+                tokens_saved=0,
+                cost_saved=0.0,
+                latency_saved=0.0,
+                latency_ms=0.0,
+                model=model,
+                provider=provider,
+                success=True,
+                usage_source=UsageSource.PROVIDER_RESPONSE,
+            )
+            record_usage(record)
 
         # Record request with decision
         record_request("FULL_LLM_CALL", self.agent_type, tenant_id)
@@ -1088,6 +1570,139 @@ class CacheEngine:
             "l1_purged": l1_purged,
             "l2_purged": l2_purged,
             "l3_purged": l3_purged,
+        }
+
+    # ------------------------------------------------------------------
+    # L5 — Context Cache (assembled RAG context)
+    # ------------------------------------------------------------------
+
+    def _build_l5_key(
+        self,
+        tenant_id: str,
+        chunks_hash: str,
+        template_version: str,
+        token_budget: int,
+        model_fingerprint: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> str:
+        """Build L5 context cache key."""
+        model_fingerprint = model_fingerprint or self._compute_model_fingerprint(
+            self.default_model, self.default_provider, self.default_model_params
+        )
+        provider = provider or self.default_provider
+        return build_l5_key(tenant_id, chunks_hash, template_version, token_budget, model_fingerprint, provider)
+
+    async def get_l5(
+        self,
+        query: str,
+        chunks: List[dict],
+        template_version: str,
+        token_budget: int,
+        tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Get cached assembled context from L5.
+
+        L5 is an exact-match layer (Hot Store). Key includes: tenant_id,
+        chunks_hash, template_version, token_budget, model_fingerprint, provider.
+        """
+        chunks_hash = compute_chunks_hash(chunks)
+        model_fingerprint = self._compute_model_fingerprint(model, provider, model_params)
+        key = self._build_l5_key(
+            tenant_id, chunks_hash, template_version, token_budget, model_fingerprint, provider
+        )
+
+        val = await _run_sync(self.exact_store.get, key)
+        if not val:
+            self._l5_stats["misses"] += 1
+            return None
+
+        try:
+            entry = json.loads(val.decode())
+        except Exception:
+            self._l5_stats["misses"] += 1
+            return None
+
+        # Defense in depth: re-verify critical fields even though the key
+        # already encodes them (protects against tampered/stale values).
+        incoming_meta = {
+            "tenant_id": tenant_id,
+            "chunk_content_hashes": chunks_hash,
+            "template_version": template_version,
+            "token_budget": token_budget,
+            "model_fingerprint": model_fingerprint,
+            "provider": provider or self.default_provider,
+        }
+        allowed, gates_passed, gates_failed = hard_gate(  # type: ignore[misc]
+            incoming_meta,
+            entry.get("meta", {}),
+            layer="L5",
+            mode=GateMode.STRICT,
+            schema=self.schema,
+        )
+
+        if allowed:
+            self._l5_stats["hits"] += 1
+            self._layer_stats["L5"] = self._layer_stats.get("L5", 0) + 1
+            logger.info("l5_cache_hit", tenant_id=tenant_id, key=key)
+            return entry.get("context")
+
+        self._l5_stats["misses"] += 1
+        return None
+
+    async def set_l5(
+        self,
+        query: str,
+        chunks: List[dict],
+        context: str,
+        template_version: str,
+        token_budget: int,
+        tenant_id: str = "default",
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_params: Optional[Dict[str, Any]] = None,
+        ttl: Optional[int] = None,
+    ) -> bool:
+        """Store assembled context in L5 cache (Hot Store / exact match)."""
+        chunks_hash = compute_chunks_hash(chunks)
+        model_fingerprint = self._compute_model_fingerprint(model, provider, model_params)
+        key = self._build_l5_key(
+            tenant_id, chunks_hash, template_version, token_budget, model_fingerprint, provider
+        )
+
+        meta = {
+            "tenant_id": tenant_id,
+            "chunk_content_hashes": chunks_hash,
+            "template_version": template_version,
+            "token_budget": token_budget,
+            "model_fingerprint": model_fingerprint,
+            "provider": provider or self.default_provider,
+            "l5_key": key,
+        }
+
+        entry = {
+            "query": query,
+            "context": context,
+            "meta": meta,
+        }
+
+        return await _run_sync(
+            self.exact_store.set,
+            key,
+            json.dumps(entry).encode(),
+            ex=ttl if ttl is not None else self.l1_ttl,
+        )
+
+    def get_l5_stats(self) -> dict:
+        """Get L5 context cache statistics."""
+        total = self._l5_stats["hits"] + self._l5_stats["misses"]
+        return {
+            "hits": self._l5_stats["hits"],
+            "misses": self._l5_stats["misses"],
+            "hit_rate": (self._l5_stats["hits"] / total) if total > 0 else 0.0,
         }
 
     # ------------------------------------------------------------------
@@ -1174,4 +1789,57 @@ class CacheEngine:
         Not yet implemented - returns None for now.
         """
         return None
+
+    def record_decision_action(self, action: str, tenant_id: str) -> None:
+        """Record a decision action for metrics."""
+        record_request(action, self.agent_type, tenant_id)
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Phase 5: Decision Trace Public API
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    def get_decision_trace(self, request_id: str) -> Optional[dict]:
+        """
+        Retrieve a decision trace by request ID.
+
+        Returns the trace as a dictionary suitable for JSON serialization,
+        or None if no trace exists for the given request_id.
+        """
+        if self.decision_traces is None:
+            return None
+        trace = self.decision_traces.get_by_request_id(request_id)
+        return trace.to_dict() if trace else None
+
+    def get_decision_trace_by_id(self, trace_id: str) -> Optional[dict]:
+        """Retrieve a decision trace by trace ID."""
+        if self.decision_traces is None:
+            return None
+        trace = self.decision_traces.get_by_trace_id(trace_id)
+        return trace.to_dict() if trace else None
+
+    def get_decision_traces(
+        self, tenant_id: Optional[str] = None, limit: int = 10
+    ) -> List[dict]:
+        """
+        Get recent decision traces, optionally filtered by tenant.
+
+        Returns a list of trace dictionaries, most recent first.
+        """
+        if self.decision_traces is None:
+            return []
+        traces = self.decision_traces.get_recent(tenant_id=tenant_id, limit=limit)
+        return [t.to_dict() for t in traces]
+
+    def get_decision_trace_stats(self) -> dict:
+        """Get statistics about stored decision traces."""
+        if self.decision_traces is None:
+            return {"enabled": False, "total_traces": 0}
+        stats = self.decision_traces.stats()
+        stats["enabled"] = True
+        return stats
+
+    def clear_decision_traces(self) -> None:
+        """Clear all stored decision traces."""
+        if self.decision_traces is not None:
+            self.decision_traces.clear()
 

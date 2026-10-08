@@ -1,0 +1,98 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ico-cache-backup
+  namespace: ico-cache
+  labels:
+    app.kubernetes.io/name: ico-cache
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ico-cache-backup
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: docker.io/bitnami/kubectl:1.28
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  DATE=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_DIR="/backups/$DATE"
+                  mkdir -p "$BACKUP_DIR"
+                  
+                  echo "Backing up Redis..."
+                  kubectl exec -n ico-cache $(kubectl get pod -n ico-cache -l app.kubernetes.io/component=redis -o jsonpath='{.items[0].metadata.name}') -- redis-cli -a $REDIS_PASSWORD --rdb "$BACKUP_DIR/redis.rdb"
+                  
+                  echo "Backing up Qdrant..."
+                  kubectl exec -n ico-cache $(kubectl get pod -n ico-cache -l app.kubernetes.io/component=qdrant -o jsonpath='{.items[0].metadata.name}') -- tar czf "$BACKUP_DIR/qdrant.tar.gz" -C /qdrant/storage .
+                  
+                  echo "Backup completed: $BACKUP_DIR"
+              env:
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ico-cache-secrets
+                      key: REDIS_AUTH
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: ico-cache-backup-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ico-cache-backup-pvc
+  namespace: ico-cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ico-cache-backup
+  namespace: ico-cache
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ico-cache-backup-role
+  namespace: ico-cache
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ico-cache-backup-binding
+  namespace: ico-cache
+subjects:
+  - kind: ServiceAccount
+    name: ico-cache-backup
+    namespace: ico-cache
+roleRef:
+  kind: Role
+  name: ico-cache-backup-role
+  apiGroup: rbac.authorization.k8s.io

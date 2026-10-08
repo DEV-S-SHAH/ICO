@@ -1,0 +1,160 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-api
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: {{ .Values.api.service.port }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: qdrant
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-redis
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: worker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-qdrant
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: qdrant
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: worker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.grpcPort }}
+  egress: []
+{{- if .Values.worker.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-worker
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ico-cache.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: qdrant
+      ports:
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.qdrant.service.grpcPort }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+{{- end }}
+{{- end }}

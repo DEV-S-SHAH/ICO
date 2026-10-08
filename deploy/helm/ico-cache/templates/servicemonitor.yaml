@@ -1,0 +1,110 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-api
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /v1/metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-worker
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  endpoints:
+    - port: health
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+---
+{{- if and .Values.redis.enabled .Values.redis.exporter.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-redis
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  endpoints:
+    - port: redis
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+---
+{{- end }}
+{{- if .Values.qdrant.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-qdrant
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: qdrant
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+---
+{{- end }}
+{{- end }}

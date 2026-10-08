@@ -1,31 +1,45 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.IcoCache = void 0;
-exports.icoCache = icoCache;
-class IcoCache {
+export class IcoCache {
+    baseUrl;
+    apiKey;
     constructor(options) {
         this.baseUrl = options.baseUrl;
+        this.apiKey = options.apiKey;
+    }
+    async request(endpoint, body) {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.apiKey) {
+            headers['X-API-Key'] = this.apiKey;
+        }
+        const res = await fetch(`${this.baseUrl}${endpoint}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            throw new Error(`ICO-Cache request failed: ${res.status} ${res.statusText}`);
+        }
+        return res.json();
     }
     async resolve(query, context, callback) {
-        const res = await fetch(`${this.baseUrl}/resolve`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, context })
-        });
-        const data = await res.json();
+        const data = await this.request('/v1/query', { query, context });
         if (data.source !== 'MISS') {
             return data.response;
         }
         const generated = await callback();
-        await fetch(`${this.baseUrl}/ingest`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, context, response: generated })
-        });
+        await this.request('/v1/ingest', { query, context, response: generated });
         return generated;
     }
+    async query(query, context = null) {
+        return this.request('/v1/query', { query, context });
+    }
+    async ingest(query, context, response) {
+        await this.request('/v1/ingest', { query, context, response });
+    }
+    async health() {
+        const res = await fetch(`${this.baseUrl}/v1/health`);
+        return res.json();
+    }
 }
-exports.IcoCache = IcoCache;
-function icoCache(options) {
+export function icoCache(options) {
     return new IcoCache(options);
 }

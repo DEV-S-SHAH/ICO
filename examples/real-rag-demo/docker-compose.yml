@@ -1,0 +1,39 @@
+services:
+  rag-api:
+    build:
+      context: ../../
+      dockerfile: examples/real-rag-demo/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - RAG_API_HOST=0.0.0.0
+      - RAG_API_PORT=8000
+      - DOCUMENTS_DIR=/app/examples/real-rag-demo/documents
+      - DATA_DIR=/app/examples/real-rag-demo/data
+      - VECTOR_STORE_BACKEND=lancedb
+      - EMBEDDING_PROVIDER=fastembed
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ENABLE_ICO_CACHE=true
+    volumes:
+      - ./documents:/app/examples/real-rag-demo/documents
+      - ./data:/app/examples/real-rag-demo/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  dashboard:
+    build:
+      context: ../../apps/dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - rag-api
+    restart: unless-stopped
+
+volumes:
+  real_rag_data:

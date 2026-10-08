@@ -1,0 +1,59 @@
+# Build stage
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POETRY_VERSION=1.8.3
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir poetry==$POETRY_VERSION
+
+COPY packages/ico-cache-py/pyproject.toml packages/ico-cache-py/README.md packages/ico-cache-py/src/ico_cache ./packages/ico-cache-py/
+
+RUN poetry export -f requirements.txt --output requirements.txt --without-hashes \
+    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt \
+    && pip wheel --no-cache-dir --wheel-dir /wheels -e packages/ico-cache-py
+
+# Runtime stage
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    HOME=/home/appuser \
+    PATH="/home/appuser/.local/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/cache /tmp/ico-cache \
+    && chown -R appuser:appuser /app /home/appuser /tmp/ico-cache
+
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl \
+    && rm -rf /wheels
+
+COPY --chown=appuser:appuser packages/ico-cache-py/src/ico_cache ./ico_cache
+
+USER appuser
+
+EXPOSE 8081
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8081/healthz || exit 1
+
+CMD ["python", "-m", "ico_cache.invalidation"]

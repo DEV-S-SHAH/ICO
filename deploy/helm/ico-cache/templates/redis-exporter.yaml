@@ -1,0 +1,77 @@
+{{- if and .Values.redis.enabled .Values.redis.exporter.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-redis-exporter
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ico-cache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis-exporter
+  template:
+    metadata:
+      labels:
+        {{- include "ico-cache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" .Values.redis.podSecurityContext) | nindent 6 }}
+      containers:
+        - name: exporter
+          image: {{ .Values.redis.exporter.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--redis.addr=redis://:$(REDIS_PASSWORD)@{{ include "ico-cache.fullname" . }}-redis:{{ .Values.redis.service.port }}"
+            - "--web.listen-address=:9121"
+            - "--web.telemetry-path=/metrics"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ico-cache.secretName" . }}
+                  key: REDIS_AUTH
+          ports:
+            - name: metrics
+              containerPort: 9121
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.redis.exporter.resources | nindent 12 }}
+      serviceAccountName: {{ include "ico-cache.serviceAccountName" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ico-cache.fullname" . }}-redis-exporter
+  labels:
+    {{- include "ico-cache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-exporter
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9121
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "ico-cache.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis-exporter
+{{- end }}

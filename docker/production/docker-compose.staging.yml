@@ -1,0 +1,212 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ../../..
+      dockerfile: docker/production/Dockerfile.api
+    image: ico-cache-api:${IMAGE_TAG:-staging}
+    container_name: ico-cache-api-staging
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=staging
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=${REDIS_PASSWORD}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gemini/gemini-flash-latest}
+      - LLM_TIMEOUT_SECONDS=60
+      - LLM_MAX_RETRIES=3
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - OTEL_SERVICE_NAME=ico-cache-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - LOG_LEVEL=INFO
+      - LOG_JSON=true
+      - OCR_ENABLED=true
+      - OCR_LANGUAGES=eng
+      - OCR_DPI=200
+      - INGEST_ROOT_DIR=/app/data/ingest
+      - API_KEYS=${API_KEYS}
+      - RATE_LIMIT_STORAGE_URI=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - RATE_LIMIT_DEFAULT=120/minute
+      - TENANT_ISOLATION_MODE=collection
+    ports:
+      - "8000:8000"
+    volumes:
+      - ico-cache-ingest-staging:/app/data/ingest
+      - ico-cache-cache-staging:/app/cache
+    networks:
+      - ico-cache-network-staging
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: docker/production/Dockerfile.worker
+    image: ico-cache-worker:${IMAGE_TAG:-staging}
+    container_name: ico-cache-worker-staging
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=staging
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=${REDIS_PASSWORD}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - TENANT_ISOLATION_MODE=collection
+      - INVALIDATION_STREAM=cache_invalidation
+      - INVALIDATION_GROUP=ico_invalidation_group
+      - INVALIDATION_CONSUMER=worker-staging-{{.Task.Slot}}
+      - WORKER_HEALTH_ENABLED=true
+      - WORKER_HEALTH_PORT=8081
+      - LOG_LEVEL=INFO
+      - LOG_JSON=true
+    networks:
+      - ico-cache-network-staging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: ico-cache-redis-staging
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --dir /data
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ico-cache-redis-data-staging:/data
+    networks:
+      - ico-cache-network-staging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: ico-cache-qdrant-staging
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ico-cache-qdrant-data-staging:/qdrant/storage
+      - ico-cache-qdrant-snapshots-staging:/qdrant/snapshots
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
+    networks:
+      - ico-cache-network-staging
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ico-cache-network-staging:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  ico-cache-ingest-staging:
+    driver: local
+  ico-cache-cache-staging:
+    driver: local
+  ico-cache-redis-data-staging:
+    driver: local
+  ico-cache-qdrant-data-staging:
+    driver: local
+  ico-cache-qdrant-snapshots-staging:
+    driver: local

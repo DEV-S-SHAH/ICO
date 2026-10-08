@@ -14,6 +14,8 @@ spec:
     matchLabels:
       {{- include "ico-cache.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: worker
+  strategy:
+    {{- toYaml .Values.worker.strategy | nindent 2 }}
   template:
     metadata:
       labels:
@@ -37,6 +39,18 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            {{- toYaml .Values.topologySpreadConstraints.labelSelector | nindent 12 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       containers:
         - name: worker
           image: {{ include "ico-cache.image" .Values.worker.image | quote }}
@@ -62,12 +76,16 @@ spec:
               port: health
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /healthz
               port: health
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           {{- end }}
           envFrom:
             - configMapRef:
@@ -81,6 +99,10 @@ spec:
               mountPath: /home/appuser/.cache
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- with .Values.worker.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}

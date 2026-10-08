@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ico-cache-staging-quota
+  namespace: ico-cache-staging
+spec:
+  hard:
+    cpu: "2"
+    memory: "4Gi"
+    pods: "5"
+    services: "3"
+    persistentvolumeclaims: "2"
+    requests.cpu: "1"
+    requests.memory: "2Gi"
+    limits.cpu: "4"
+    limits.memory: "8Gi"

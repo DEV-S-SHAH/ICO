@@ -75,9 +75,9 @@ class LanceDBStore(BaseVectorStore):
         self,
         collection: str,
         vector: Any,
-        query_filter: Any,
-        limit: int,
-        score_threshold: float,
+        query_filter: Any = None,
+        limit: int = 1,
+        score_threshold: float = 0.0,
         using: Optional[str] = None,
         **kwargs: Any,
     ) -> List[Any]:

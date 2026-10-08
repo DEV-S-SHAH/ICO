@@ -1,16 +1,32 @@
 # Default values for ico-cache.
 # This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
 
+# Global settings
+global:
+  # Default environment (development, staging, production)
+  environment: production
+  # Image pull secrets for private registries
+  imagePullSecrets: []
+  # Common labels applied to all resources
+  commonLabels: {}
+  # Common annotations applied to all resources
+  commonAnnotations: {}
+  # Pod security standards (restricted, baseline, privileged)
+  podSecurityStandard: restricted
+
+# Name overrides
 nameOverride: ""
 fullnameOverride: ""
 
-# Pull secrets applied to every pod (e.g. private registry credentials).
-imagePullSecrets: []
-
+# Service Account
 serviceAccount:
   create: true
   name: ""
-  annotations: {}
+  annotations:
+    # EKS: eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ico-cache
+    # GKE: iam.gke.io/gcp-service-account: ico-cache@my-project.iam.gserviceaccount.com
+  automountServiceAccountToken: true
 
 # Multi-Tenant Configuration
 tenants:
@@ -43,6 +59,7 @@ env:
   OCR_ENABLED: "true"
   OCR_LANGUAGES: "eng"
   OCR_DPI: "200"
+  INGEST_ROOT_DIR: "/app/data/ingest"
 
 # Shared pod/container hardening defaults (override per component as needed).
 podSecurityContext:
@@ -72,12 +89,32 @@ api:
   service:
     type: ClusterIP
     port: 8000
+    # Internal port name for probes
+    targetPort: http
   autoscaling:
     enabled: true
     minReplicas: 2
     maxReplicas: 10
-    targetCPUUtilizationPercentage: 80
+    targetCPUUtilizationPercentage: 70
     targetMemoryUtilizationPercentage: 80
+    # HPA v2 behavior for scaling stabilization
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Percent
+            value: 10
+            periodSeconds: 60
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 15
+          - type: Pods
+            value: 4
+            periodSeconds: 15
+        selectPolicy: Max
   podDisruptionBudget:
     enabled: true
     minAvailable: 1
@@ -88,20 +125,47 @@ api:
     requests:
       cpu: "250m"
       memory: "512Mi"
-  podAnnotations: {}
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/v1/metrics"
   nodeSelector: {}
   tolerations: []
-  affinity: {}
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - api
+            topologyKey: kubernetes.io/hostname
   # Optional per-component overrides; fall back to the shared defaults above.
   podSecurityContext: {}
   containerSecurityContext: {}
+  # Rolling update strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  # Termination grace period for graceful shutdown
+  terminationGracePeriodSeconds: 60
+  # PreStop hook for graceful connection draining
+  lifecycle:
+    preStop:
+      exec:
+        command: ["/bin/sh", "-c", "sleep 10"]
 
 # Invalidation Worker Deployment (Redis Streams consumer)
 worker:
   enabled: true
   replicaCount: 1
   image:
-    repository: "ico-cache-api"
+    repository: "ico-cache-worker"
     pullPolicy: "IfNotPresent"
     tag: "latest"
     digest: ""
@@ -119,13 +183,34 @@ worker:
     requests:
       cpu: "100m"
       memory: "256Mi"
-  podAnnotations: {}
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8081"
+    prometheus.io/path: "/metrics"
   nodeSelector: {}
   tolerations: []
-  affinity: {}
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - worker
+            topologyKey: kubernetes.io/hostname
   # Optional per-component overrides; fall back to the shared defaults above.
   podSecurityContext: {}
   containerSecurityContext: {}
+  # Rolling update strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  terminationGracePeriodSeconds: 30
 
 # Redis Cache Backend
 redis:
@@ -143,6 +228,7 @@ redis:
     storageClass: ""
     # Requires Kubernetes >= 1.27; PVCs are retained when the StatefulSet is deleted.
     retainOnDelete: true
+    accessMode: ReadWriteOnce
   resources:
     limits:
       cpu: "500m"
@@ -169,6 +255,23 @@ redis:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Redis configuration
+  config:
+    maxmemory: "512mb"
+    maxmemory-policy: "allkeys-lru"
+    appendonly: "yes"
+    save: "900 1 300 10 60 10000"
+  # Redis exporter for Prometheus metrics
+  exporter:
+    enabled: true
+    image: "oliver006/redis_exporter:v1.61.0"
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+      requests:
+        cpu: "50m"
+        memory: "32Mi"
 
 # Qdrant Vector DB Backend
 qdrant:
@@ -185,8 +288,8 @@ qdrant:
     enabled: true
     size: "5Gi"
     storageClass: ""
-    # Requires Kubernetes >= 1.27; PVCs are retained when the StatefulSet is deleted.
     retainOnDelete: true
+    accessMode: ReadWriteOnce
   resources:
     limits:
       cpu: "1000m"
@@ -209,6 +312,75 @@ qdrant:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Qdrant configuration
+  config:
+    storage:
+      performance:
+        max_search_threads: 4
+    service:
+      http_port: 6333
+      grpc_port: 6334
+  # Qdrant doesn't have a separate exporter; metrics exposed on /metrics
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "120"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+  hosts:
+    - host: ico-cache.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ico-cache-tls
+      hosts:
+        - ico-cache.example.com
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  # Ingress rules for API
+  apiIngress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 8000
+  # Egress rules for API
+  apiEgress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: qdrant
+      ports:
+        - protocol: TCP
+          port: 6333
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
 
 # Secrets
 secrets:
@@ -240,3 +412,83 @@ externalSecrets:
   #     remoteRef:
   #       key: ico-cache/gemini
   #       property: api_key
+
+# Monitoring
+monitoring:
+  enabled: true
+  # Prometheus ServiceMonitor (requires Prometheus Operator)
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    namespace: monitoring
+    labels:
+      release: prometheus
+  # Grafana Dashboard
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+    labels:
+      grafana_dashboard: "1"
+
+# Backup Configuration
+backup:
+  enabled: false
+  schedule: "0 2 * * *" # Daily at 2 AM
+  image: "docker.io/bitnami/kubectl:1.28"
+  # For Velero, Restic, or custom backup solutions
+  # volumes:
+  #   - name: redis-data
+  #     mountPath: /data
+  #   - name: qdrant-data
+  #     mountPath: /qdrant/storage
+
+# Priority Class for critical workloads
+priorityClassName: ""
+
+# Topology Spread Constraints
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+  labelSelector:
+    matchLabels:
+      app.kubernetes.io/name: ico-cache
+
+# Pod Disruption Budget defaults (overridden per component)
+podDisruptionBudget:
+  enabled: true
+  minAvailable: "50%"
+
+# Security Context constraints
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Resource quotas for namespace
+resourceQuota:
+  enabled: false
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+    pods: "10"
+    services: "5"
+    persistentvolumeclaims: "4"
+
+# LimitRange for default resource limits
+limitRange:
+  enabled: false
+  default:
+    cpu: "500m"
+    memory: "512Mi"
+  defaultRequest:
+    cpu: "100m"
+    memory: "128Mi"
+  max:
+    cpu: "2"
+    memory: "4Gi"

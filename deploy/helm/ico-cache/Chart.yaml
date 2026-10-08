@@ -2,7 +2,18 @@ apiVersion: v2
 name: ico-cache
 description: Helm chart for ICO-Cache generalized multi-tenant LLM semantic cache
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 1.0.0
+appVersion: "1.0.4"
 maintainers:
   - name: Dev
+keywords:
+  - llm
+  - cache
+  - semantic
+  - rag
+  - vector-db
+  - redis
+  - qdrant
+sources:
+  - https://github.com/DEV-S-SHAH/ICO
+home: https://github.com/DEV-S-SHAH/ICO

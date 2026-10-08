@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: qdrant
 spec:
   serviceName: {{ include "ico-cache.fullname" . }}-qdrant
-  replicas: {{ .Values.qdrant.replicaCount }}
+  replicas: {{ .Values.qdrant.replicaCount | default 1 }}
   selector:
     matchLabels:
       {{- include "ico-cache.selectorLabels" . | nindent 6 }}
@@ -18,6 +18,10 @@ spec:
       labels:
         {{- include "ico-cache.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: qdrant
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.qdrant.service.httpPort }}"
+        prometheus.io/path: "/metrics"
     spec:
       {{- include "ico-cache.podSpec" (dict "ctx" $ "podSecurityContext" .Values.qdrant.podSecurityContext) | nindent 6 }}
       {{- with .Values.qdrant.nodeSelector }}
@@ -31,6 +35,17 @@ spec:
       {{- with .Values.qdrant.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            {{- toYaml .Values.topologySpreadConstraints.labelSelector | nindent 12 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
       {{- end }}
       containers:
         - name: qdrant
@@ -54,16 +69,27 @@ spec:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          env:
+            - name: QDRANT__SERVICE__HTTP_PORT
+              value: {{ .Values.qdrant.service.httpPort | quote }}
+            - name: QDRANT__SERVICE__GRPC_PORT
+              value: {{ .Values.qdrant.service.grpcPort | quote }}
+            - name: QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS
+              value: {{ .Values.qdrant.config.storage.performance.max_search_threads | quote }}
       volumes:
         - name: snapshots
           emptyDir: {}
@@ -77,7 +103,7 @@ spec:
         name: storage
       spec:
         accessModes:
-          - ReadWriteOnce
+          - {{ .Values.qdrant.persistence.accessMode }}
         {{- with .Values.qdrant.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}

@@ -5,6 +5,8 @@ Contains generic MetadataSchema, MetadataField, and hard_gate diffing
 independent of any specific domain or dataset vocabulary.
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
@@ -54,8 +56,8 @@ CRITICAL_FIELDS: Dict[str, List[str]] = {
     "L0a": ["function_version", "input_hash", "env_hash"],
     "L0b": ["embedding_model_version", "text_hash"],
     "L1": ["tenant_id", "model_fingerprint", "provider", "prompt_version", "entity", "quarter", "topic"],
-    "L2": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version"],
-    "L3": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version", "context_hash"],
+    "L2": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version", "prompt_version", "context_hash"],
+    "L3": ["tenant_id", "model_fingerprint", "embedding_version", "entity", "quarter", "topic", "collection_version", "context_hash", "prompt_version"],
     "L4": ["tenant_id", "collection_version", "filter_hash", "top_k", "embedding_version", "reranker_version"],
     "L5": ["tenant_id", "chunk_content_hashes", "template_version", "token_budget", "model_fingerprint", "provider"],
     "L6": ["tenant_id", "tool_name", "tool_version", "arg_hash", "idempotency_key"],

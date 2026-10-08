@@ -1,0 +1,157 @@
+name: CI - Helm Chart
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'deploy/helm/ico-cache/**'
+      - '.github/workflows/ci-helm.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'deploy/helm/ico-cache/**'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Set up Kubernetes (kind)
+        uses: helm/kind-action@v1.8.0
+        with:
+          version: 'v1.28.0'
+
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Update dependencies
+        run: |
+          cd deploy/helm/ico-cache
+          helm dependency update
+
+      - name: Lint chart
+        run: |
+          cd deploy/helm/ico-cache
+          helm lint .
+
+      - name: Template chart (dry-run)
+        run: |
+          cd deploy/helm/ico-cache
+          helm template ico-cache . \
+            --set global.environment=production \
+            --set api.replicaCount=2 \
+            --set worker.enabled=true \
+            --set redis.enabled=true \
+            --set qdrant.enabled=true \
+            --set secrets.create=true \
+            --set secrets.redisPassword=testpassword \
+            --set ingress.enabled=false \
+            --set networkPolicy.enabled=false \
+            --set monitoring.serviceMonitor.enabled=false \
+            > /dev/null
+        env:
+          KUBECONFIG: /tmp/kubeconfig
+
+  test-install:
+    name: Test Install (Kind)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Set up Kubernetes (kind)
+        uses: helm/kind-action@v1.8.0
+        with:
+          version: 'v1.28.0'
+
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Update dependencies
+        run: |
+          cd deploy/helm/ico-cache
+          helm dependency update
+
+      - name: Create namespace
+        run: kubectl create namespace ico-cache-test
+
+      - name: Install chart
+        run: |
+          cd deploy/helm/ico-cache
+          helm install ico-cache-test . \
+            --namespace ico-cache-test \
+            --set global.environment=development \
+            --set api.replicaCount=1 \
+            --set worker.enabled=true \
+            --set redis.enabled=true \
+            --set qdrant.enabled=true \
+            --set secrets.create=true \
+            --set secrets.redisPassword=testpassword \
+            --set ingress.enabled=false \
+            --set networkPolicy.enabled=false \
+            --set monitoring.serviceMonitor.enabled=false \
+            --wait --timeout 10m
+
+      - name: Wait for pods
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ico-cache -n ico-cache-test --timeout=300s
+
+      - name: Run smoke tests
+        run: |
+          kubectl port-forward -n ico-cache-test svc/ico-cache-test-api 8000:8000 &
+          PORT_FORWARD_PID=$!
+          sleep 10
+          curl -f http://localhost:8000/v1/health || exit 1
+          kill $PORT_FORWARD_PID
+
+      - name: Cleanup
+        if: always()
+        run: |
+          helm uninstall ico-cache-test -n ico-cache-test
+          kubectl delete namespace ico-cache-test
+
+  values-validation:
+    name: Validate Values Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint values.yaml
+        run: |
+          yamllint deploy/helm/ico-cache/values.yaml
+
+      - name: Validate values schema
+        run: |
+          cd deploy/helm/ico-cache
+          echo "CmltcG9ydCB5YW1sLCBzeXMKd2l0aCBvcGVuKCd2YWx1ZXMueWFtbCcpIGFzIGY6CiAgICB2YWx1ZXMgPSB5YW1sLnNhZmVfbG9hZChmKQpyZXF1aXJlZF9rZXlzID0gWydnbG9iYWwnLCAnYXBpJywgJ3dvcmtlcicsICdyZWRpcycsICdxZHJhbnQnLCAnc2VjcmV0cycsICdpbmdyZXNzJywgJ25ldHdvcmtQb2xpY3knLCAnbW9uaXRvcmluZyddCm1pc3NpbmcgPSBbayBmb3IgayBpbiByZXF1aXJlZF9rZXlzIGlmIGsgbm90IGluIHZhbHVlc10KaWYgbWlzc2luZzoKICAgIGZvciBrIGluIG1pc3Npbmc6CiAgICAgICAgcHJpbnQoJ01pc3NpbmcgcmVxdWlyZWQga2V5OiAnICsgaywgZmlsZT1zeXMuc3RkZXJyKQogICAgc3lzLmV4aXQoMSkKcHJpbnQoJ0FsbCByZXF1aXJlZCBrZXlzIHByZXNlbnQnKQo=" | base64 -d > /tmp/validate_values.py
+          python3 /tmp/validate_values.py

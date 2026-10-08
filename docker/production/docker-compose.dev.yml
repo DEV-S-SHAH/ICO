@@ -1,0 +1,305 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ../../..
+      dockerfile: docker/production/Dockerfile.api
+    image: ico-cache-api:dev
+    container_name: ico-cache-api-dev
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=development
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=devredissecret
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - LLM_MODEL=gemini/gemini-flash-latest
+      - LLM_TIMEOUT_SECONDS=60
+      - LLM_MAX_RETRIES=3
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - OTEL_SERVICE_NAME=ico-cache-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=
+      - LOG_LEVEL=DEBUG
+      - LOG_JSON=false
+      - OCR_ENABLED=true
+      - OCR_LANGUAGES=eng
+      - OCR_DPI=200
+      - INGEST_ROOT_DIR=/app/data/ingest
+      - 'API_KEYS={"dev-key-default": "default", "key-tenant-a": "tenant_a", "key-tenant-b": "tenant_b"}'
+      - RATE_LIMIT_STORAGE_URI=memory://
+      - RATE_LIMIT_DEFAULT=120/minute
+      - TENANT_ISOLATION_MODE=collection
+    ports:
+      - "8000:8000"
+    volumes:
+      - ico-cache-ingest-dev:/app/data/ingest
+      - ico-cache-cache-dev:/app/cache
+      - ../../packages/ico-cache-py/src/ico_cache:/app/ico_cache:ro
+      - ../../apps/financial-rag-demo/api:/app/api:ro
+      - ../../examples/financial_schema.py:/app/financial_schema.py:ro
+    networks:
+      - ico-cache-network-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: docker/production/Dockerfile.worker
+    image: ico-cache-worker:dev
+    container_name: ico-cache-worker-dev
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=devredissecret
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - TENANT_ISOLATION_MODE=collection
+      - INVALIDATION_STREAM=cache_invalidation
+      - INVALIDATION_GROUP=ico_invalidation_group
+      - INVALIDATION_CONSUMER=worker-dev
+      - WORKER_HEALTH_ENABLED=true
+      - WORKER_HEALTH_PORT=8081
+      - LOG_LEVEL=DEBUG
+      - LOG_JSON=false
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../../packages/ico-cache-py/src/ico_cache:/app/ico_cache:ro
+    networks:
+      - ico-cache-network-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: ico-cache-redis-dev
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass devredissecret
+      --appendonly yes
+      --dir /data
+    ports:
+      - "6379:6379"
+    volumes:
+      - ico-cache-redis-data-dev:/data
+    networks:
+      - ico-cache-network-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "devredissecret", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: ico-cache-qdrant-dev
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ico-cache-qdrant-data-dev:/qdrant/storage
+      - ico-cache-qdrant-snapshots-dev:/qdrant/snapshots
+    networks:
+      - ico-cache-network-dev
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  langfuse:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    container_name: ico-cache-langfuse-dev
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_PASSWORD=clickhouse
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/postgres
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=devredissecret
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=miniosecret
+      - NEXTAUTH_SECRET=devsecret
+      - NEXTAUTH_URL=http://localhost:3000
+      - LANGFUSE_INIT_ORG_ID=dev-org
+      - LANGFUSE_INIT_ORG_NAME=Development
+      - LANGFUSE_INIT_PROJECT_ID=dev-project
+      - LANGFUSE_INIT_PROJECT_NAME=ICO-Cache Dev
+      - LANGFUSE_INIT_USER_EMAIL=dev@local
+      - LANGFUSE_INIT_USER_NAME=Developer
+      - LANGFUSE_INIT_USER_PASSWORD=devpassword
+      - SALT=devsalt
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+    ports:
+      - "3000:3000"
+    networks:
+      - ico-cache-network-dev
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    container_name: ico-cache-clickhouse-dev
+    restart: unless-stopped
+    environment:
+      - CLICKHOUSE_DB=default
+      - CLICKHOUSE_PASSWORD=clickhouse
+      - CLICKHOUSE_USER=clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ico-cache-clickhouse-data-dev:/var/lib/clickhouse
+      - ico-cache-clickhouse-logs-dev:/var/log/clickhouse-server
+    networks:
+      - ico-cache-network-dev
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    container_name: ico-cache-minio-dev
+    restart: unless-stopped
+    command: sh -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=miniosecret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ico-cache-minio-data-dev:/data
+    networks:
+      - ico-cache-network-dev
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+  postgres:
+    image: docker.io/postgres:17
+    container_name: ico-cache-postgres-dev
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - PGTZ=UTC
+      - TZ=UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - ico-cache-postgres-data-dev:/var/lib/postgresql/data
+    networks:
+      - ico-cache-network-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+networks:
+  ico-cache-network-dev:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+
+volumes:
+  ico-cache-ingest-dev:
+    driver: local
+  ico-cache-cache-dev:
+    driver: local
+  ico-cache-redis-data-dev:
+    driver: local
+  ico-cache-qdrant-data-dev:
+    driver: local
+  ico-cache-qdrant-snapshots-dev:
+    driver: local
+  ico-cache-clickhouse-data-dev:
+    driver: local
+  ico-cache-clickhouse-logs-dev:
+    driver: local
+  ico-cache-minio-data-dev:
+    driver: local
+  ico-cache-postgres-data-dev:
+    driver: local

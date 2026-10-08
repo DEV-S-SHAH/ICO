@@ -67,7 +67,7 @@ class TestDecisionEngine:
         assert decision.confidence == 0.0
         assert decision.layer == "NONE"
         assert decision.fallback_reason is not None
-        assert len(decision.layer_evaluations) == 5  # L0a, L0b, L1, L2, L3
+        assert len(decision.layer_evaluations) == 6  # L0a, L0b, L1, L2, L3, L5
 
     @pytest.mark.asyncio
     async def test_decide_l1_hit_when_exact_match(self, decision_engine):

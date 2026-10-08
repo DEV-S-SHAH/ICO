@@ -1,0 +1,158 @@
+name: CD - Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.0.0)'
+        required: true
+      skip_approval:
+        description: 'Skip manual approval (emergency only)'
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  KUBECONFIG_PROD: ${{ secrets.KUBECONFIG_PROD }}
+
+jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      api_digest: ${{ steps.images.outputs.api_digest }}
+      worker_digest: ${{ steps.images.outputs.worker_digest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event.inputs.version }}" != "" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get image digests
+        id: images
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          API_TAG=$(docker inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-api:${VERSION} --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 || echo "")
+          WORKER_TAG=$(docker inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:${VERSION} --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 || echo "")
+          if [ -z "$API_TAG" ] || [ -z "$WORKER_TAG" ]; then
+            echo "Error: Images not found for version $VERSION"
+            exit 1
+          fi
+          echo "api_digest=$API_TAG" >> $GITHUB_OUTPUT
+          echo "worker_digest=$WORKER_TAG" >> $GITHUB_OUTPUT
+
+  approve:
+    name: Manual Approval
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: github.event.inputs.skip_approval != 'true'
+    environment: production-approval
+    steps:
+      - name: Wait for approval
+        run: echo "Waiting for manual approval..."
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [prepare, approve]
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Set up kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_PROD }}
+
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Update dependencies
+        run: |
+          cd deploy/helm/ico-cache
+          helm dependency update
+
+      - name: Create backup before deployment
+        run: |
+          kubectl create job --from=cronjob/ico-cache-backup ico-cache-backup-pre-deploy-${{ needs.prepare.outputs.version }} -n ico-cache
+          kubectl wait --for=condition=complete job/ico-cache-backup-pre-deploy-${{ needs.prepare.outputs.version }} -n ico-cache --timeout=300s
+
+      - name: Deploy to Production
+        run: |
+          cd deploy/helm/ico-cache
+          helm upgrade --install ico-cache . \
+            --namespace ico-cache \
+            --create-namespace \
+            --set global.environment=production \
+            --set api.image.digest=${{ needs.prepare.outputs.api_digest }} \
+            --set worker.image.digest=${{ needs.prepare.outputs.worker_digest }} \
+            --set api.replicaCount=3 \
+            --set worker.replicaCount=2 \
+            --set redis.enabled=true \
+            --set qdrant.enabled=true \
+            --set qdrant.replicaCount=2 \
+            --set secrets.create=true \
+            --set secrets.redisPassword=${{ secrets.REDIS_PASSWORD_PROD }} \
+            --set secrets.geminiApiKey=${{ secrets.GEMINI_API_KEY }} \
+            --set secrets.qdrantApiKey=${{ secrets.QDRANT_API_KEY_PROD }} \
+            --set ingress.enabled=true \
+            --set ingress.hosts[0].host=ico-cache.example.com \
+            --set networkPolicy.enabled=true \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set backup.enabled=true \
+            --wait --timeout 20m \
+            --atomic
+
+      - name: Run production smoke tests
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ico-cache -n ico-cache --timeout=300s
+          kubectl port-forward -n ico-cache svc/ico-cache-api 8000:8000 &
+          PORT_FORWARD_PID=$!
+          sleep 20
+          curl -f https://ico-cache.example.com/v1/health || exit 1
+          curl -f https://ico-cache.example.com/v1/ready || exit 1
+          kill $PORT_FORWARD_PID
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/ico-cache-api -n ico-cache --timeout=300s
+          kubectl rollout status deployment/ico-cache-worker -n ico-cache --timeout=300s
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "Production deployment v${{ needs.prepare.outputs.version }} completed successfully"
+          # Add Slack/Teams notification here
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          helm rollback ico-cache -n ico-cache
+          kubectl rollout status deployment/ico-cache-api -n ico-cache --timeout=300s
+          kubectl rollout status deployment/ico-cache-worker -n ico-cache --timeout=300s
+          echo "Rollback completed"
+          # Add alert notification here

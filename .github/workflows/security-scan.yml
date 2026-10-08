@@ -1,0 +1,186 @@
+name: Security Scanning
+
+on:
+  schedule:
+    - cron: '0 2 * * 1' # Weekly on Monday at 2 AM
+  push:
+    branches: [main, develop]
+    paths:
+      - 'packages/ico-cache-py/**'
+      - 'docker/production/**'
+      - '.github/workflows/security-scan.yml'
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  sast:
+    name: Static Analysis (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit on Python code
+        run: |
+          bandit -r packages/ico-cache-py/src -f json -o bandit-report.json || true
+          bandit -r apps/financial-rag-demo/api -f json -o bandit-api-report.json || true
+
+      - name: Upload Bandit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-reports
+          path: |
+            bandit-report.json
+            bandit-api-report.json
+
+      - name: Run Ruff security rules
+        run: |
+          pip install ruff
+          ruff check packages/ico-cache-py/src --select=S --output-format=json > ruff-security.json || true
+
+      - name: Upload Ruff security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruff-security-report
+          path: ruff-security.json
+
+  dependency-scan:
+    name: Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Scan Python dependencies
+        run: |
+          cd packages/ico-cache-py
+          pip-audit --format=json --output=pip-audit-report.json || true
+
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: packages/ico-cache-py/pip-audit-report.json
+
+      - name: Scan demo app dependencies
+        run: |
+          pip-audit -r apps/financial-rag-demo/requirements-demo.txt --format=json --output=pip-audit-demo-report.json || true
+
+      - name: Upload demo pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-demo-report
+          path: pip-audit-demo-report.json
+
+  container-scan:
+    name: Container Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: |
+          docker build -t ico-cache-api:scan -f docker/production/Dockerfile.api .
+
+      - name: Build Worker image
+        run: |
+          docker build -t ico-cache-worker:scan -f docker/production/Dockerfile.worker .
+
+      - name: Run Trivy vulnerability scanner on API
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ico-cache-api:scan'
+          format: 'sarif'
+          output: 'trivy-api.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Run Trivy vulnerability scanner on Worker
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ico-cache-worker:scan'
+          format: 'sarif'
+          output: 'trivy-worker.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-api.sarif'
+
+      - name: Upload Worker Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-worker.sarif'
+
+      - name: Run Trivy config scan on Kubernetes manifests
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'deploy/kubernetes'
+          format: 'sarif'
+          output: 'trivy-k8s.sarif'
+
+      - name: Upload K8s Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-k8s.sarif'
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --json --fail
+
+  license-check:
+    name: License Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-licenses
+        run: pip install pip-licenses
+
+      - name: Check Python licenses
+        run: |
+          cd packages/ico-cache-py
+          pip install -e .[dev]
+          pip-licenses --format=json --output-file=licenses.json
+          echo "CmltcG9ydCBqc29uLCBzeXMKd2l0aCBvcGVuKCdsaWNlbnNlcy5qc29uJykgYXMgZjoKICAgIGxpY2Vuc2VzID0ganNvbi5sb2FkKGYpCmFsbG93ZWQgPSB7J01JVCcsICdBcGFjaGUtMi4wJywgJ0JTRC0zLUNsYXVzZScsICdCU0QtMi1DbGF1c2UnLCAnUFNGLTIuMCcsICdNUEwtMi4wJywgJ0lTQycsICdQeXRob24tMi4wJ30KZm9yIHBrZyBpbiBsaWNlbnNlczoKICAgIGlmIHBrZ1snTGljZW5zZSddIG5vdCBpbiBhbGxvd2VkOgogICAgICAgIHByaW50KCdEaXNhbGxvd2VkIGxpY2Vuc2U6ICcgKyBwa2dbJ05hbWUnXSArICcgLSAnICsgcGtnWydMaWNlbnNlJ10sIGZpbGU9c3lzLnN0ZGVycikKICAgICAgICBzeXMuZXhpdCgxKQpwcmludCgnQWxsIGxpY2Vuc2VzIGFsbG93ZWQnKQo=" | base64 -d > /tmp/check_licenses.py
+          python3 /tmp/check_licenses.py
