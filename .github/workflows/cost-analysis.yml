@@ -1,0 +1,57 @@
+name: Cost Analysis
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: cost-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cost-analysis:
+    name: Cost & Latency Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate benchmark data schema
+        run: |
+          python3 - <<'EOF'
+          import json
+          rows = json.load(open("benchmark_results/responses_50_queries.json"))
+          assert len(rows) == 50
+          keys = {"query", "hit_type", "cost_no_cache_usd", "cost_with_cache_usd",
+                  "latency_no_cache_ms", "latency_with_cache_ms"}
+          for r in rows:
+              assert keys <= set(r), f"missing keys in {r.get('query_id')}"
+          print(f"schema OK: {len(rows)} rows, cache served {sum(r['hit_type'] != 'NONE' for r in rows)}")
+          EOF
+
+      - name: Regenerate cost report
+        run: |
+          python3 scripts/cost_analysis.py
+
+      - name: Cost report is in sync with the committed report
+        run: |
+          git diff --exit-code docs/COST_ANALYSIS.md
+
+      - name: Caching never increases cost (savings invariant)
+        run: |
+          python3 - <<'EOF'
+          import json
+          rows = json.load(open("benchmark_results/responses_50_queries.json"))
+          assert all(float(r["cost_no_cache_usd"]) >= 0 for r in rows)
+          nc = sum(float(r["cost_no_cache_usd"]) for r in rows)
+          wc = sum(float(r["cost_with_cache_usd"]) for r in rows)
+          assert nc >= wc, "cached runs must not be more expensive than no-cache"
+          print(f"savings invariant OK: ${nc - wc:.4f} saved across {len(rows)} queries")
+          EOF

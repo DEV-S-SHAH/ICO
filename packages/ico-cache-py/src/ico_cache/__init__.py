@@ -9,7 +9,7 @@ from .core.decision_trace import (
     DecisionOutcome,
 )
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 __all__ = [
     "CacheEngine",

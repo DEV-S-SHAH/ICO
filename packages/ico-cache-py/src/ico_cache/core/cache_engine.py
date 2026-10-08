@@ -7,6 +7,7 @@ import functools
 import hashlib
 import json
 import platform
+import re
 import sys
 import time
 import uuid
@@ -95,6 +96,56 @@ def _canonical_meta_suffix(meta: dict) -> str:
     return "|" + "&".join(f"{k}={v}" for k, v in items)
 
 
+def _cosine(a: List[float], b: List[float]) -> float:
+    """Plain cosine similarity (does not assume normalized vectors)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    denom = (
+        sum(x * x for x in a) ** 0.5
+    ) * (
+        sum(y * y for y in b) ** 0.5
+    )
+    if denom == 0:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b)) / denom
+
+
+def _stale(payload: dict, ttl: int) -> bool:
+    """True if a vector-cache entry is older than its TTL (no TTL -> never)."""
+    if not ttl:
+        return False
+    ts = payload.get("ts")
+    if not isinstance(ts, (int, float)):
+        return False
+    return time.time() - ts > ttl
+
+
+_EVIDENCE_RE = re.compile(
+    r"\d[\d.,]*(?:%|ms|s|gb|mb|kb)?|\b[A-Z][A-Za-z0-9_]{1,}\b|\b[a-zA-Z]{3,}[a-z]*[A-Z][A-Za-z0-9_]*\b"
+)
+_EVIDENCE_STOP = {
+    "the", "and", "for", "with", "that", "this", "you", "are", "was", "not",
+    "but", "have", "there", "from", "which", "will", "than", "what", "how",
+    "your", "their", "about", "would", "these", "over", "per", "out", "with",
+}
+
+
+def extract_evidence(context: Optional[str]) -> list:
+    """Discriminative tokens (numbers, identifiers, significant words) of a
+    context snippet, used to check whether a cached answer is still grounded
+    in the *current* retrieved context."""
+    if not context:
+        return []
+    out: list = []
+    for tok in _EVIDENCE_RE.findall(context):
+        low = tok.lower()
+        if len(tok) < 2 or low in _EVIDENCE_STOP:
+            continue
+        if tok not in out:
+            out.append(tok)
+    return out[:32]
+
+
 class CacheEngine:
     def __init__(
         self,
@@ -114,6 +165,11 @@ class CacheEngine:
         l1_ttl: int = 3600,
         tenant_isolation_mode: str = "collection",  # "collection" or "payload"
         lookup_timeout: float = 2.0,
+        serve_threshold: float = 0.90,
+        bind_context_to_l1: bool = False,
+        l2_l3_ttl: int = 3600,
+        paraphrase_threshold: Optional[float] = None,
+        evidence_overlap_threshold: float = 0.50,
         # Phase 3: New parameters for DecisionEngine integration
         default_model: str = "gpt-4o",
         default_provider: str = "openai",
@@ -164,6 +220,13 @@ class CacheEngine:
 
         self.l1_ttl = l1_ttl
         self.lookup_timeout = lookup_timeout
+
+        self.serve_threshold = serve_threshold
+        self.bind_context_to_l1 = bind_context_to_l1
+        self.l2_l3_ttl = l2_l3_ttl
+        self.paraphrase_threshold = paraphrase_threshold
+        self.evidence_overlap_threshold = evidence_overlap_threshold
+        self._emb_cache: dict = {}
 
         # Phase 3: Default identity for L1 key
         self.default_model = default_model
@@ -268,6 +331,52 @@ class CacheEngine:
     def _normalize(self, query: str) -> str:
         return " ".join(query.lower().strip().split())
 
+    async def _same_question_score(self, query_emb: list, stored_query: str) -> Optional[float]:
+        """Return embedding cosine between the incoming query and a stored
+        query so a caller can verify both really ask the same question."""
+        if not stored_query or not stored_query.strip():
+            return None
+        stored_emb = await self._embed(stored_query)
+        if not stored_emb:
+            return None
+        return _cosine(query_emb, stored_emb)
+
+    async def _embed(self, text: str) -> list:
+        """Embed with an in-memory memo; contexts and stored queries repeat a lot."""
+        key = self._normalize(text)[:2000]
+        hit = self._emb_cache.get(key)
+        if hit is None:
+            hit = await _run_sync(self.embedder.embed, text)
+            self._emb_cache[key] = hit
+        return hit
+
+    def _grounding_pass(self, payload: dict, context: Optional[str]) -> bool:
+        """True when the CURRENT retrieved context still supports the evidence
+        tokens of the answer that was originally cached. Lets a sub-threshold
+        paraphrase serve only if it is independently grounded."""
+        ev = payload.get("evidence") or []
+        if not ev or not context:
+            return False
+        ctx_norm = " ".join(context.lower().split())
+        hits = sum(1 for t in ev if t.lower() in ctx_norm)
+        return hits / len(ev) >= self.evidence_overlap_threshold
+
+    async def _serve_candidate(self, emb, stored_query, payload, context) -> Optional[dict]:
+        """Two-tier serving: strong same-question OR (weaker question match AND
+        answer still grounded in the incoming retrieved context)."""
+        same_q = await self._same_question_score(emb, stored_query)
+        if same_q is None:
+            return None
+        if same_q >= self.serve_threshold:
+            return payload.get("answer")
+        if (
+            self.paraphrase_threshold
+            and same_q >= self.paraphrase_threshold
+            and self._grounding_pass(payload, context)
+        ):
+            return payload.get("answer")
+        return None
+
     def _compute_env_hash(self) -> str:
         """Compute environment hash for cross-environment reproducibility."""
         parts = [
@@ -363,13 +472,19 @@ class CacheEngine:
             canonical_meta_suffix=suffix,
         )
 
-    def _update_adaptive_threshold(self, hit: bool):
-        if not self.adaptive_threshold:
-            return
+    async def _record_result(self, hit: bool):
+        """Count every outcome unconditionally, then adapt if enabled."""
         if hit:
             self._stats_hits += 1
         else:
             self._stats_misses += 1
+        self._update_adaptive_threshold(hit)
+
+    def _update_adaptive_threshold(self, hit: bool):
+        # NOTE: counting happens in _record_result so metrics are truthful
+        # even when adaptive_threshold is disabled.
+        if not self.adaptive_threshold:
+            return
         total = self._stats_hits + self._stats_misses
         if total > 0 and total % 10 == 0:
             current_hit_rate = self._stats_hits / total
@@ -1019,7 +1134,7 @@ class CacheEngine:
                         cache_key=res.get("_l1_key") if res else None,
                     )
                 if res:
-                    self._update_adaptive_threshold(True)
+                    await self._record_result(True)
                     self._layer_stats["L1"] += 1
                     # Record tokens saved on cache hit (estimate based on response size)
                     self._record_cache_hit_savings(res, tenant_id, model, provider)
@@ -1061,7 +1176,7 @@ class CacheEngine:
                         reuse_source="semantic_match" if res2 else None,
                     )
                 if res2:
-                    self._update_adaptive_threshold(True)
+                    await self._record_result(True)
                     self._layer_stats["L2"] += 1
                     self._record_cache_hit_savings(res2, tenant_id, model, provider)
                     logger.info(
@@ -1102,7 +1217,7 @@ class CacheEngine:
                         reuse_source="context_match" if res3 else None,
                     )
                 if res3:
-                    self._update_adaptive_threshold(True)
+                    await self._record_result(True)
                     self._layer_stats["L3"] += 1
                     self._record_cache_hit_savings(res3, tenant_id, model, provider)
                     logger.info(
@@ -1124,7 +1239,7 @@ class CacheEngine:
                     return {"source": "L3", "response": res3}
 
             total_ms = (time.perf_counter() - t0) * 1000
-            self._update_adaptive_threshold(False)
+            await self._record_result(False)
             self._layer_stats["MISS"] += 1
             logger.info(
                 "cache_miss",

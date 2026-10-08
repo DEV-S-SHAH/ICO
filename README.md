@@ -22,7 +22,7 @@ pip install ico-cache
 | :--- | :--- | :--- |
 | **API Token Cost** | 100% cost on every repeated/reworded prompt | **Drastically reduced** via L1 exact & L2/L3 semantic hits |
 | **Response Latency** | Seconds (2,000ms – 10,000ms+) | **Sub-millisecond** (L1) or **15–30ms** (L2/L3) |
-| **False-Hit Rate** | Prone to false positives in naïve vector caches | **0.00% false-hit baseline** enforced by `hard_gate` metadata validation |
+| **False-Hit Rate** | Prone to false positives in naïve vector caches | **0.00% false-hit baseline** enforced by `hard_gate` metadata validation + `serve_threshold` semantic gate |
 | **Cross-Platform** | Fragile file locking / signal handling | **Fully supported** across Linux, Windows, and macOS |
 
 > **Reference Demo:** `apps/financial-rag-demo` provides a reference implementation running against SEC filings with FastAPI + Streamlit to illustrate real-world usage.
@@ -101,6 +101,23 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+---
+
+## Serving Guardrails & Recommended Configuration
+
+In production, gate semantic serves so a cached answer is only returned for sufficiently similar questions — this prevents wrong answers on near-identical but differently-worded queries:
+
+```python
+engine = CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)
+```
+
+- **`serve_threshold`** (default `0.90`) — cosine similarity a rephrased query must reach to serve a cached L2/L3 answer. Lower = more hits but more risk.
+- **`bind_context_to_l1=True`** — keep context-awareness on exact (L1) traffic only; recommended for RAG pipelines.
+- **`l2_l3_ttl`** (default `3600`) — expiry (seconds) for L2/L3 re-serves.
+- **`paraphrase_threshold` / `evidence_overlap_threshold`** (off by default) — optional evidence-grounding band for paraphrase hits; keep off on small corpora.
+
+Measured across 11 corpora (warm cache): **74–100% of LLM calls eliminated with 0 additional incorrect answers**. Finance/contract-style corpora should raise `serve_threshold` to ~0.95.
 
 ---
 

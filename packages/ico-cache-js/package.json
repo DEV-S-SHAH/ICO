@@ -1,6 +1,6 @@
 {
   "name": "ico-cache-js",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "TypeScript/JavaScript SDK for the ico-cache semantic caching middleware (L1 exact / L2 semantic / L3 context-aware lookups for LLM responses)",
   "type": "module",
   "main": "dist/index.js",

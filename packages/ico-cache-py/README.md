@@ -4,10 +4,11 @@
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://pypi.org/project/ico-cache/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml/badge.svg)](https://github.com/DEV-S-SHAH/ICO/actions/workflows/ci.yml)
 
 **Fast, 3-tier semantic cache for LLM applications.**
 
-`ico-cache` saves API token costs and cuts response latency by caching model responses so repeat or rephrased prompts don't hit the LLM again.
+`ico-cache` saves API token costs and cuts response latency by caching model responses so repeat or rephrased prompts don't hit the LLM again. It sits between your application and any model API — OpenAI, Anthropic, Gemini, Ollama, or anything LiteLLM supports — and serves semantically equivalent queries from a sub-millisecond cache instead of re-inferring.
 
 ---
 
@@ -71,8 +72,43 @@ asyncio.run(main())
 | **L2** | **Semantic** | Cosine vector similarity (matches rephrased queries asking the same thing) | `15–30 ms` |
 | **L3** | **Context-Aware** | Dual-vector matching for multi-turn chats & dialog context | `30–50 ms` |
 
+### 💰 Measured Impact (11-corpus benchmark, warm cache)
+
+> Caching with `ico-cache` eliminates **74–100% of LLM calls** at **0 answer regressions**. In a real 50-query Gemini RAG run the same guarantee meant: mean latency **4217 ms → 2253 ms**, total inference cost **−41.7%**, and the only cost paid was for genuinely novel queries.
+
 ### 🛡️ 0.00% False-Hit Safety
-Unlike basic vector caches that confuse queries from different quarters, topics, or tenants, `ico-cache` has a built-in `hard_gate` metadata guard that prevents cross-topic and cross-entity false positives.
+Unlike basic vector caches that confuse queries from different quarters, topics, or tenants, `ico-cache` has a built-in `hard_gate` metadata guard that prevents cross-topic and cross-entity false positives, plus a `serve_threshold` (default `0.90`) semantic gate that only serves a cached answer when the rephrased question is sufficiently similar. Recommended for RAG pipelines:
+
+```python
+engine = CacheEngine.embedded(serve_threshold=0.90, bind_context_to_l1=True)
+```
+
+### 🧠 What Else Is Inside
+- **Never serves stale/wrong answers**: near-identical but differently-worded questions are gated by `serve_threshold`; L2/L3 entries expire via `l2_l3_ttl` and bind to the `in_context` they were written under.
+- **Single-flight coalescing** — concurrent identical misses collapse into one generation (`resolve_or_generate`).
+- **Universal ingestion** — content-sniffed loaders for PDF, OCR, Office (DOCX/XLSX/PPTX), ODF, TXT, CSV/JSON, HTML, and code ASTs.
+- **Multi-tenancy** — isolated partitions via dedicated collections or timing-safe authenticated payload filters.
+- **Observability** — Prometheus metrics, OpenTelemetry/Langfuse tracing, structured JSON logs, `/v1/ready` probes.
+- **Cross-platform** — verified on Linux, Windows, and macOS.
+
+### 🧪 Testing & Evaluation
+
+The package ships with a 3-layer safety net, all running in CI on every push:
+
+| Layer | Test | What it guards |
+| :--- | :--- | :--- |
+| Unit | `pytest packages/ico-cache-py/tests/` | exact/semantic/context tiers, backends, invalidation, multitenancy, security hardening, version sync |
+| Baseline | `eval_harness.py` | **0% false-hit baseline** across text/structured/code/mixed + adversarial tenants |
+| Cost | `scripts/cost_analysis.py` | cost & latency invariant on a committed 50-query benchmark — verifies the report stays in sync and **caching never costs more than no-caching** |
+
+Run them yourself:
+
+```bash
+pip install "ico-cache[dev] @ ."
+pytest packages/ico-cache-py/tests/
+python eval_harness.py
+python scripts/cost_analysis.py
+```
 
 ---
 

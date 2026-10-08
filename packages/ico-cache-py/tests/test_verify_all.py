@@ -255,7 +255,7 @@ async def test_4_concurrency(make_engine):
 async def test_5_adaptive_threshold(make_engine):
     engine = make_engine()
     for _ in range(50):
-        engine._update_adaptive_threshold(hit=False)
+        await engine._record_result(hit=False)
     assert engine.thresh_semantic < 0.85
 
     q_stored   = "What was MSFT revenue in Q1?"
