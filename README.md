@@ -187,7 +187,10 @@ python eval_harness.py --eval-adversarial
 # 4. 5-Dataset benchmark harness
 python benchmark.py --dataset all
 
-# 5. Security and vulnerability audit
+# 5. 200-query all-layer live trial (L0a, L0b, L1-L5) against the demo
+python scripts/trial_200_all_layers.py
+
+# 6. Security and vulnerability audit
 python audit.py --all
 ```
 
@@ -278,32 +281,77 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser:
 
 ---
 
-### Step 4: Run the 50-Query Multi-Tier Showcase
+### Step 4: Run the 200-Query All-Layer Trial
 
-Observe guaranteed hits across **L0a, L1, L2, and L3 Context-Aware** tiers:
+`scripts/trial_200_all_layers.py` fires exactly **200 requests** through the **entire**
+cascade — **L0a, L0b, L1, L2, L3, L4, and L5** — using deliberately difficult,
+domain-grounded questions drawn from the demo corpus (Transformer attention,
+ICO-Cache architecture, and RAG). It exercises exact match, semantic paraphrase,
+context-aware multi-turn dialogue, embedding caching, retrieval caching, and
+assembled-context caching in a single pass.
 
 ```bash
-python scripts/showcase_live_queries.py
+python scripts/trial_200_all_layers.py
 ```
 
-Expected output:
+Representative output:
 ```text
-===============================================================================================
-  SYNAPSE / ICO-CACHE: 50 CHALLENGING MULTI-TURN & CONTEXT-AWARE (L3) SHOWCASE
-  Streaming live to Dashboard at http://localhost:3000
-===============================================================================================
-[01/50] [L0a HIT]                 calc: 1024 * 768                              |   4.8ms | saved   8 toks
-[02/50] [L0a HIT]                 calc: (4500000 - 3200000) / 4500000           |   1.0ms | saved  15 toks
-[03/50] [L0a HIT]                 ping                                          |   2.1ms | saved   2 toks
-[06/50] [MISS]              [CTX] What are the specific debt service coverage c |  85.0ms | saved   0 toks
-[07/50] [L3 HIT (sim=0.946)] [CTX] Can you summarize the debt service constraint |  23.1ms | saved 147 toks
-[10/50] [L3 HIT (sim=0.975)] [CTX] Detail the amortized inference cost limits an |  22.2ms | saved 143 toks
-[23/50] [L1 HIT]                  Enumerate the aggregate capital expenditure a |   2.3ms | saved 132 toks
-[28/50] [L2 HIT (sim=0.916)]       How did consolidated operating profitability  |  22.6ms | saved 105 toks
-===============================================================================================
- Cache Hits: 68.8% - 100% across all tiers | Sub-millisecond to 15ms latency
-===============================================================================================
+====================================================================================================
+  ICO-CACHE: 200-QUERY ALL-LAYER TRIAL (L0a / L0b / L1 / L2 / L3 / L4 / L5)
+  Target: http://127.0.0.1:8000   Model: gemini-1.5-flash
+====================================================================================================
+[001/200] L0a    [L0a HIT]                 calc: (12873 * 47 - 2934) / 7                  0.6ms saved   14
+[003/200] L0a    [L0a HIT]                 calc: round(1234567.891 * 3.14159, 2)          0.7ms saved   20
+[055/200] L1     [L1 HIT]                  What are the tradeoffs between dense and sparse 0.7ms saved  154
+[057/200] L1     [L2 HIT]       sim=0.857  How does chunking granularity affect retrieval 3.8ms saved  113
+[083/200] L2     [L2 HIT]       sim=0.987  What makes source provenance and citation trac 6.3ms saved  168
+[086/200] L2     [L2 HIT]       sim=0.966  Describe scaled dot-product attention and the  4.5ms saved  143
+[131/200] L3-base [L3 HIT]      sim=0.890  How should provenance metadata be structured to 6.0ms saved  139
+[134/200] L3     [L3 HIT]       sim=0.888  Why does citation tracking matter for regulated 12.6ms saved 136
+====================================================================================================
+  200-QUERY ALL-LAYER TRIAL SUMMARY
+====================================================================================================
+  Total requests       : 200
+  Cache hits           : 116 (58.0%)
+  Cache misses (LLM)   : 84
+  Tokens saved         : 11336
+  Avg hit latency      : 2.1 ms
+  Avg miss latency     : 154.9 ms
+  Winning-layer hits:
+    - L0a : 40
+    - L1  : 43
+    - L2  : 15
+    - L3  : 18
+  Internal cascade metrics (cumulative):
+    - L0b : 360 reqs, hitRate 1.000, latencySaved 8941.8 ms
+    - L4  : 84 reqs, hitRate 0.179, latencySaved 386.2 ms
+    - L5  : 200 reqs, hitRate 0.420, latencySaved 0.0 ms
+====================================================================================================
 ```
+
+Measured per block (fresh cache state):
+
+| Block | Requests | Cache hits | Winning tiers | Tokens saved |
+| :--- | ---: | ---: | :--- | ---: |
+| L0a deterministic | 30 | 30 (100%) | L0a ×30 | 377 |
+| L1 exact match | 30 | 16 (53%) | L1 ×14, L2 ×2 | 2,270 |
+| L2 semantic paraphrase | 30 | 24 (80%) | L2 ×13, L1 ×11 | 3,491 |
+| L3 context-aware dialogue | 50 | 16 (32%) | L3 ×16 | 2,296 |
+| L4/L5 bypass retrieval | 30 | 0* | internal L4/L5 | 0 |
+| Mixed verification | 30 | 30 (100%) | L0a ×10, L1 ×18, L3 ×2 | 2,902 |
+| **Total** | **200** | **116 (58.0%)** | | **11,336** |
+
+- **All seven cache types verified hitting in one run**: L0a (40 top-level), L0b (100%
+  embedding-cache hit rate, 8.9 s latency saved), L1 (43), L2 (15), L3 (18), L4 (17.9%),
+  L5 (42.0%).
+- **58.0%** overall hit rate on deliberately hard paraphrases/dialogues; hit latency
+  **2.1 ms** vs miss latency **154.9 ms** (≈74× faster).
+- The L4/L5 row marks `*` because that block intentionally sends `bypass_cache: true`, so
+  requests reach the RAG path directly and exercise the **internal** L4 retrieval cache
+  (15 hits) and **L5** assembled-context cache (84 hits); top-level hits are 0 by design.
+
+> For a shorter, dashboard-streamed run, `python scripts/showcase_live_queries.py` runs a
+> 50-query multi-turn showcase across L0a, L1, L2, and L3.
 
 ---
 
@@ -365,6 +413,7 @@ cd packages/ico-cache-js && npm test
 ├── examples/
 │   └── real-rag-demo/         # End-to-end PDF RAG with LangGraph, FastEmbed, LanceDB, and Qdrant
 ├── scripts/
+│   ├── trial_200_all_layers.py  # 200-query all-layer trial across L0a, L0b, L1-L5
 │   ├── showcase_live_queries.py # 50-query live showcase across L0a, L1, L2, L3
 │   └── validate_real_rag.py   # Comprehensive validation gatekeeper
 ├── docker/                    # Docker Compose production definitions

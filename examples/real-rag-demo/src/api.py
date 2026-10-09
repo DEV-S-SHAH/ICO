@@ -1126,12 +1126,21 @@ def create_demo_app(cfg: Optional[DemoConfig] = None) -> FastAPI:
 
         # Layer specific stats
         def calc_layer(layer_name: str) -> Dict[str, Any]:
-            l_hits = sum(1 for r in requests_history if r["cache"]["layer"] == layer_name)
-            l_saved_tokens = sum(r["cache"]["tokensSaved"] for r in requests_history if r["cache"]["layer"] == layer_name)
-            l_saved_lat = sum(r["cache"]["latencySaved"] for r in requests_history if r["cache"]["layer"] == layer_name)
+            # Count hits from the per-layer decision trace so internal tiers
+            # (L4 retrieval cache, L5 assembled-context cache) are reported
+            # accurately even though they are never the top-level winning layer.
+            def layer_hit(r: Dict[str, Any]) -> bool:
+                return any(
+                    d.get("layer") == layer_name and d.get("status") == "HIT"
+                    for d in r.get("cacheDecision", [])
+                )
+
+            l_hits = sum(1 for r in requests_history if layer_hit(r))
+            l_saved_tokens = sum(r["cache"]["tokensSaved"] for r in requests_history if layer_hit(r))
+            l_saved_lat = sum(r["cache"]["latencySaved"] for r in requests_history if layer_hit(r))
             l_reqs = sum(
                 1 for r in requests_history
-                if any(d["layer"] == layer_name for d in r.get("cacheDecision", []))
+                if any(d.get("layer") == layer_name for d in r.get("cacheDecision", []))
             ) or l_hits
             rate = (l_hits / l_reqs) if l_reqs > 0 else 0.0
             return {
