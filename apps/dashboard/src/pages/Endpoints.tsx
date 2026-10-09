@@ -1,6 +1,6 @@
 // Endpoints Page
 
-import React from 'react'
+import React, { useState } from 'react'
 import {
   Globe,
   RefreshCw,
@@ -26,7 +26,7 @@ import {
   LoadingSkeleton,
   Select,
 } from '@/components/common'
-import { useUIStore, useDataStore } from '@/lib/stores'
+import { useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
 import type { PaginationState, SortState } from '@/types'
 
@@ -46,7 +46,6 @@ const ENDPOINT_DATA = [
 ]
 
 export function Endpoints() {
-  const { demoMode } = useUIStore()
   const [loading, setLoading] = useState(false)
   const [sortConfig, setSortConfig] = useState<SortState>({ column: 'requests', direction: 'desc' })
   const [pagination, setPagination] = useState<PaginationState>({ page: 1, pageSize: 25, total: ENDPOINT_DATA.length })

@@ -1,6 +1,6 @@
 // Models Page
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import {
   Cpu,
   RefreshCw,
@@ -29,13 +29,12 @@ import {
 import { ModelComparisonChart } from '@/components/charts'
 import { useUIStore, useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { mockModels } from '@/data/mock'
 import type { ModelMetrics, PaginationState, SortState } from '@/types'
 
 const PAGE_SIZES = [10, 25, 50, 100]
 
 export function Models() {
-  const { demoMode, liveTick } = useUIStore()
+  const { liveTick } = useUIStore()
   const { models, setModels } = useDataStore()
   const [loading, setLoading] = useState(false)
   const [sortConfig, setSortConfig] = useState<SortState>({ column: 'requests', direction: 'desc' })
@@ -45,25 +44,23 @@ export function Models() {
   // Load models
   useEffect(() => {
     async function loadModels() {
-      if (liveTick === 0 || demoMode) setLoading(true)
+      if (liveTick === 0) setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const data = await api.getModels()
         setModels(data)
-        setPagination({ total: data.length })
+        setPagination(prev => ({ ...prev, total: data.length }))
       } catch {
-        if (!demoMode) return
-        setModels(mockModels)
-        setPagination({ total: mockModels.length })
+        // keep existing data; offline indicator in header reflects state
       } finally {
         setLoading(false)
       }
     }
     loadModels()
-  }, [demoMode, liveTick, setModels])
+  }, [liveTick, setModels])
 
   // Filter and sort models
-  const filteredModels = React.useMemo(() => {
+  const filteredModels = useMemo(() => {
     let result = [...models]
     if (search) {
       const s = search.toLowerCase()
@@ -79,7 +76,7 @@ export function Models() {
     return result
   }, [models, search, sortConfig])
 
-  const paginatedModels = React.useMemo(() => {
+  const paginatedModels = useMemo(() => {
     const start = (pagination.page - 1) * pagination.pageSize
     return filteredModels.slice(start, start + pagination.pageSize)
   }, [filteredModels, pagination])

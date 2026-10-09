@@ -1,6 +1,6 @@
 // Playground Page
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Terminal,
   Send,
@@ -11,6 +11,8 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
+  Square,
+  Brain,
 } from 'lucide-react'
 import { cn } from '@/components/common'
 import { formatNumber, formatDuration, formatCurrency, formatPercent, jsonStringify } from '@/lib/formatters'
@@ -28,25 +30,15 @@ import {
   TabsContent,
   Textarea,
 } from '@/components/common'
-import { useUIStore, usePlaygroundStore } from '@/lib/stores'
-import { getApiClient } from '@/lib/api/client'
+import { usePlaygroundStore } from '@/lib/stores'
+import { apiClient } from '@/lib/api/client'
 import type { Request } from '@/types'
 
 const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6', provider: 'Anthropic', endpoint: '/v1/messages' },
-  { value: 'claude-opus-4.5', label: 'Claude Opus 4.5', provider: 'Anthropic', endpoint: '/v1/messages' },
-  { value: 'gpt-5', label: 'GPT-5', provider: 'OpenAI', endpoint: '/v1/chat/completions' },
-  { value: 'gpt-5-mini', label: 'GPT-5 Mini', provider: 'OpenAI', endpoint: '/v1/chat/completions' },
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'Google', endpoint: '/v1/chat/completions' },
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'Google', endpoint: '/v1/chat/completions' },
-  { value: 'llama-3.1-405b', label: 'Llama 3.1 405B', provider: 'Meta', endpoint: '/v1/chat/completions' },
-  { value: 'llama-3.1-70b', label: 'Llama 3.1 70B', provider: 'Meta', endpoint: '/v1/chat/completions' },
-  { value: 'qwen-2.5-72b', label: 'Qwen 2.5 72B', provider: 'Alibaba', endpoint: '/v1/chat/completions' },
-  { value: 'mistral-large-2', label: 'Mistral Large 2', provider: 'Mistral', endpoint: '/v1/chat/completions' },
+  { value: 'nvidia/nemotron-3-ultra-550b-a55b', label: 'Nemotron 3 Ultra 550B', provider: 'openai', endpoint: '/v1/playground/stream' },
 ]
 
 export function Playground() {
-  const { demoMode } = useUIStore()
   const {
     model,
     provider,
@@ -75,6 +67,13 @@ export function Playground() {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [responseTabs, setResponseTabs] = useState<'response' | 'raw' | 'trace'>('response')
 
+  // Live streaming state (token-by-token from the provider)
+  const [reasoning, setReasoning] = useState('')
+  const [streamText, setStreamText] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [streamMeta, setStreamMeta] = useState<{ model?: string; latency_ms?: number; reasoning_tokens?: number; output_tokens?: number } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
   // Update provider/endpoint when model changes
   useEffect(() => {
     const selected = MODEL_OPTIONS.find(m => m.value === model)
@@ -90,23 +89,54 @@ export function Playground() {
     setLoading(true)
     setError(null)
 
+    // Live mode: stream reasoning + answer token-by-token
+    setResponse(null)
+    setReasoning('')
+    setStreamText('')
+    setStreamMeta(null)
+    setIsStreaming(true)
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
-      const api = getApiClient(demoMode)
-      const result = await api.sendPlaygroundRequest({
-        model,
-        provider,
-        endpoint,
-        systemPrompt,
-        userPrompt,
-        temperature,
-        maxTokens,
-      })
-      setResponse(result)
+      await apiClient.streamPlaygroundRequest(
+        { model, systemPrompt, userPrompt, temperature, maxTokens, thinking: true },
+        {
+          onStart: (meta) => setStreamMeta({ model: meta.model }),
+          onDelta: ({ reasoning: r, content: c }) => {
+            if (r) setReasoning(prev => prev + r)
+            if (c) setStreamText(prev => prev + c)
+          },
+          onDone: (meta) => setStreamMeta(meta),
+          onError: (msg) => setError(msg),
+        },
+        controller.signal
+      )
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send request')
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setError(err instanceof Error ? err.message : 'Failed to stream request')
+      }
     } finally {
+      setIsStreaming(false)
       setLoading(false)
+      abortRef.current = null
     }
+  }
+
+  const handleStop = () => {
+    abortRef.current?.abort()
+    setIsStreaming(false)
+    setLoading(false)
+  }
+
+  const handleClear = () => {
+    abortRef.current?.abort()
+    setReasoning('')
+    setStreamText('')
+    setStreamMeta(null)
+    setIsStreaming(false)
+    reset()
   }
 
   const handleCopy = async (text: string) => {
@@ -136,7 +166,7 @@ export function Playground() {
           </h1>
           <p className="page-description">Test models, compare responses, and inspect cache behavior in real-time</p>
         </div>
-        <Button variant="ghost" size="sm" onClick={reset}>
+        <Button variant="ghost" size="sm" onClick={handleClear}>
           <Trash2 className="w-4 h-4 mr-1" />
           Clear
         </Button>
@@ -225,7 +255,7 @@ export function Playground() {
                       value={maxTokens}
                       onChange={(e) => setMaxTokens(parseInt(e.target.value) || 0)}
                       min={1}
-                      max={8192}
+                      max={32768}
                       className="font-mono"
                     />
                   </div>
@@ -234,23 +264,30 @@ export function Playground() {
             </div>
 
             {/* Send Button */}
-            <Button
-              className="w-full py-3"
-              onClick={handleSend}
-              disabled={loading || !userPrompt.trim()}
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" />
-                  Send Request
-                </>
-              )}
-            </Button>
+            {isStreaming ? (
+              <Button variant="danger" className="w-full py-3" onClick={handleStop}>
+                <Square className="w-4 h-4" />
+                Stop Streaming
+              </Button>
+            ) : (
+              <Button
+                className="w-full py-3"
+                onClick={handleSend}
+                disabled={loading || !userPrompt.trim()}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    Send Request
+                  </>
+                )}
+              </Button>
+            )}
 
             {error && (
               <div className="p-3 bg-error/10 border border-error/30 rounded-md text-error text-body">
@@ -297,7 +334,7 @@ export function Playground() {
                 <Divider />
 
                 {/* Response Tabs */}
-                <Tabs value={responseTabs} onValueChange={setResponseTabs}>
+                <Tabs defaultValue="response" value={responseTabs} onValueChange={(v) => setResponseTabs(v as 'response' | 'trace' | 'raw')}>
                   <TabsList>
                     <TabsTrigger value="response">Response</TabsTrigger>
                     <TabsTrigger value="raw">Raw JSON</TabsTrigger>
@@ -379,6 +416,62 @@ export function Playground() {
                 </div>
               </CardContent>
             </>
+          ) : isStreaming || streamText || reasoning ? (
+            <CardContent className="p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-section-title">Response</h3>
+                <Badge variant={isStreaming ? 'info' : 'success'} dot>
+                  {isStreaming ? 'STREAMING' : 'COMPLETE'}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 p-3 bg-bg-elevated rounded-lg">
+                <div className="text-center">
+                  <p className="text-2xl font-semibold font-mono tabular-nums">
+                    {streamMeta?.latency_ms != null ? formatDuration(streamMeta.latency_ms) : isStreaming ? '…' : '—'}
+                  </p>
+                  <p className="text-metadata text-text-muted">Latency</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-semibold font-mono tabular-nums">{formatNumber(streamMeta?.output_tokens ?? 0)}</p>
+                  <p className="text-metadata text-text-muted">Output Tokens</p>
+                </div>
+              </div>
+
+              {reasoning && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-metadata text-text-muted">
+                    <Brain className="w-4 h-4" />
+                    REASONING
+                    {streamMeta?.reasoning_tokens ? ` · ${formatNumber(streamMeta.reasoning_tokens)} tokens` : ''}
+                  </div>
+                  <div className="p-4 bg-bg-elevated rounded-lg font-mono text-code whitespace-pre-wrap text-text-secondary max-h-64 overflow-y-auto">
+                    {reasoning}
+                  </div>
+                </div>
+              )}
+
+              <Divider />
+
+              <div className="space-y-2">
+                <h4 className="text-body font-medium text-text-secondary">Answer</h4>
+                <div className="p-4 bg-bg-elevated rounded-lg min-h-[200px] font-mono text-code whitespace-pre-wrap">
+                  {streamText}
+                  {isStreaming && (
+                    <span className="inline-block w-2 h-4 ml-0.5 bg-accent align-middle animate-pulse" />
+                  )}
+                </div>
+              </div>
+
+              {streamText && !isStreaming && (
+                <div className="flex justify-end">
+                  <Button variant="ghost" size="sm" onClick={() => handleCopy(streamText)}>
+                    {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
           ) : (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center">

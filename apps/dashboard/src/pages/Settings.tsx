@@ -69,7 +69,7 @@ const PROVIDER_TYPES = [
 ]
 
 export function Settings() {
-  const { demoMode, theme, setTheme, environment, setEnvironment } = useUIStore()
+  const { theme, setTheme, environment, setEnvironment } = useUIStore()
   const { settings, setSettings } = useDataStore()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -95,7 +95,7 @@ export function Settings() {
     async function loadSettings() {
       setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const data = await api.getSettings()
         setSettings(data)
         setProviders(data.providers)
@@ -106,15 +106,15 @@ export function Settings() {
       }
     }
     loadSettings()
-  }, [demoMode, setSettings])
+  }, [setSettings])
 
   const handleSave = async () => {
     setSaving(true)
     setSaved(false)
     try {
-      const api = getApiClient(demoMode)
+      const api = getApiClient()
       const newSettings: Partial<SettingsType> = {
-        general: { appName: 'Synapse', defaultTenant: 'default', defaultModel: 'claude-sonnet-4.6' },
+        general: { appName: 'Synapse', defaultTenant: 'default', defaultModel: 'nvidia/nemotron-3-ultra-550b-a55b' },
         appearance: { theme, compactMode: false, animations: true },
       }
       await api.updateSettings(newSettings)
@@ -267,11 +267,9 @@ export function Settings() {
               <Input label="Default Tenant" value={settings?.general.defaultTenant || 'default'} />
               <Select
                 label="Default Model"
-                value={settings?.general.defaultModel || 'claude-sonnet-4.6'}
+                value={settings?.general.defaultModel || 'nvidia/nemotron-3-ultra-550b-a55b'}
                 options={[
-                  { value: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-                  { value: 'gpt-5', label: 'GPT-5' },
-                  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+                  { value: 'nvidia/nemotron-3-ultra-550b-a55b', label: 'NVIDIA Nemotron 3 Ultra 550B' },
                 ]}
               />
             </CardContent>
@@ -291,12 +289,6 @@ export function Settings() {
                   { value: 'staging', label: 'Staging' },
                   { value: 'production', label: 'Production' },
                 ]}
-              />
-              <Switch
-                label="Demo Mode"
-                description="Use mock data instead of connecting to backend"
-                checked={demoMode}
-                onChange={useUIStore.getState().setDemoMode}
               />
             </CardContent>
           </Card>
@@ -706,7 +698,7 @@ export function Settings() {
                 label="Models (comma-separated)"
                 value={newProvider.models.join(', ')}
                 onChange={(e) => handleProviderChange('models', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-                placeholder="gpt-4, gpt-3.5-turbo"
+                placeholder="nvidia/nemotron-3-ultra-550b-a55b"
               />
               <div className="grid grid-cols-2 gap-4">
                 <Input

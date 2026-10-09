@@ -4,6 +4,14 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+    load_dotenv()
+except Exception:
+    pass
+
 
 @dataclass
 class DemoConfig:
@@ -43,6 +51,9 @@ class DemoConfig:
     gemini_api_key: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY", None)
     openai_base_url: Optional[str] = os.getenv("OPENAI_BASE_URL", None)
+    llm_top_p: float = float(os.getenv("LLM_TOP_P", "0.95"))
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "16384"))
+    llm_enable_thinking: bool = os.getenv("LLM_ENABLE_THINKING", "true").lower() == "true"
 
     # Cache parameters
     semantic_threshold: float = float(os.getenv("SEMANTIC_THRESHOLD", "0.85"))

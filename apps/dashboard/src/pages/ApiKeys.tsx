@@ -21,22 +21,27 @@ import {
   Badge,
   Card,
   CardContent,
+  CardHeader,
   Divider,
   EmptyState,
   Switch,
+  Select,
 } from '@/components/common'
-import { useUIStore } from '@/lib/stores'
-
-const MOCK_API_KEYS = [
-  { id: 'key-1', name: 'Production API Key', key: 'sk-prod-abc123def456ghi789jkl', prefix: 'sk-prod-', created: '2024-01-15', lastUsed: '2024-01-20', expires: '2025-01-15', status: 'active', scopes: ['read', 'write', 'admin'], rateLimit: 10000 },
-  { id: 'key-2', name: 'Staging API Key', key: 'sk-staging-xyz789uvw456rst123', prefix: 'sk-staging-', created: '2024-02-01', lastUsed: '2024-01-19', expires: '2024-08-01', status: 'active', scopes: ['read', 'write'], rateLimit: 5000 },
-  { id: 'key-3', name: 'Development Key', key: 'sk-dev-mno345pqr678stu901', prefix: 'sk-dev-', created: '2024-03-10', lastUsed: '2024-01-18', expires: 'Never', status: 'active', scopes: ['read'], rateLimit: 1000 },
-  { id: 'key-4', name: 'Read-only Analytics', key: 'sk-analytics-abc999def888', prefix: 'sk-analytics-', created: '2024-01-20', lastUsed: '2024-01-10', expires: '2024-07-20', status: 'expiring', scopes: ['read'], rateLimit: 500 },
-  { id: 'key-5', name: 'Legacy Key (Revoked)', key: 'sk-legacy-old123key456', prefix: 'sk-legacy-', created: '2023-06-01', lastUsed: '2023-12-01', expires: '2024-01-01', status: 'revoked', scopes: ['read', 'write'], rateLimit: 1000 },
-]
+interface ApiKey {
+  id: string
+  name: string
+  key: string
+  prefix: string
+  created: string
+  lastUsed: string
+  expires: string
+  status: string
+  scopes: string[]
+  rateLimit: number
+}
 
 export function ApiKeys() {
-  const { demoMode } = useUIStore()
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [showKey, setShowKey] = useState<string | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newKeyName, setNewKeyName] = useState('')
@@ -70,6 +75,7 @@ export function ApiKeys() {
       scopes: newKeyScopes,
       rateLimit: newKeyRateLimit,
     }
+    setApiKeys(prev => [...prev, newKey])
     setShowCreateModal(false)
     setNewKeyName('')
     setNewKeyScopes(['read'])
@@ -84,7 +90,7 @@ export function ApiKeys() {
 
   const handleRevoke = (id: string) => {
     if (confirm('Are you sure you want to revoke this API key? This action cannot be undone.')) {
-      // In real app, call API to revoke
+      setApiKeys(prev => prev.filter(k => k.id !== id))
     }
   }
 
@@ -135,7 +141,18 @@ export function ApiKeys() {
 
       {/* API Keys List */}
       <div className="space-y-4">
-        {MOCK_API_KEYS.map((apiKey) => (
+        {apiKeys.length === 0 && (
+          <Card>
+            <CardContent className="pt-4">
+              <EmptyState
+                icon={<Key className="w-12 h-12" />}
+                title="No API keys yet"
+                description="This runtime has no key management backend. Use Create API Key to generate a client-side key for your own demo workflows."
+              />
+            </CardContent>
+          </Card>
+        )}
+        {apiKeys.map((apiKey) => (
           <Card key={apiKey.id} className="p-4">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-4 flex-1">

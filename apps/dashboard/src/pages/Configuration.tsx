@@ -24,7 +24,6 @@ import {
   Divider,
   Switch,
 } from '@/components/common'
-import { useUIStore } from '@/lib/stores'
 
 const CONFIG_SECTIONS = [
   { id: 'cache', label: 'Cache Configuration', icon: Database },
@@ -34,7 +33,6 @@ const CONFIG_SECTIONS = [
 ]
 
 export function Configuration() {
-  const { demoMode } = useUIStore()
   const [expandedSections, setExpandedSections] = useState<string[]>(['cache'])
   const [saving, setSaving] = useState(false)
 

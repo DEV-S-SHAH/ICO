@@ -20,6 +20,8 @@ import {
   Card,
   CardContent,
   Tabs,
+  TabsList,
+  TabsTrigger,
 } from '@/components/common'
 
 const DOC_SECTIONS = [
@@ -140,14 +142,14 @@ export function Docs() {
       </Card>
 
       {/* Tabs Navigation */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="border-b border-border-subtle">
-        <Tabs.List className="grid w-full gap-0">
+      <Tabs defaultValue={activeTab} value={activeTab} onValueChange={setActiveTab} className="border-b border-border-subtle">
+        <TabsList className="grid w-full gap-0">
           {DOC_SECTIONS.map(section => (
-            <Tabs.Trigger key={section.id} value={section.id} className="py-3 px-4">
+            <TabsTrigger key={section.id} value={section.id} className="py-3 px-4">
               {section.label}
-            </Tabs.Trigger>
+            </TabsTrigger>
           ))}
-        </Tabs.List>
+        </TabsList>
       </Tabs>
 
       {/* Content */}

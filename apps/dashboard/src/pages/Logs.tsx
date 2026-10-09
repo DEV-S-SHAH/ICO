@@ -1,6 +1,6 @@
 // Logs Page
 
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   FileText,
   Search,
@@ -8,6 +8,8 @@ import {
   Download,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   AlertTriangle,
   CheckCircle,
   Info,
@@ -27,7 +29,10 @@ import {
   Divider,
   EmptyState,
   LoadingSkeleton,
+  Switch,
 } from '@/components/common'
+import { getApiClient } from '@/lib/api/client'
+import type { Request } from '@/types'
 
 const LOG_LEVELS = [
   { value: 'debug', label: 'Debug', color: 'text-text-muted' },
@@ -36,33 +41,77 @@ const LOG_LEVELS = [
   { value: 'error', label: 'Error', color: 'text-red-400' },
 ]
 
-const MOCK_LOGS = [
-  { id: 'log-1', timestamp: '2024-01-20T14:32:15.123Z', level: 'info', service: 'cache-api', message: 'Cache hit for key sha256:abc123', metadata: { layer: 'L1', latency: 2, tenant: 'default' } },
-  { id: 'log-2', timestamp: '2024-01-20T14:32:14.456Z', level: 'info', service: 'cache-api', message: 'Cache miss for key sha256:def456', metadata: { layer: 'L2', latency: 45, tenant: 'default' } },
-  { id: 'log-3', timestamp: '2024-01-20T14:32:13.789Z', level: 'warn', service: 'embedding-worker', message: 'Embedding generation took longer than expected', metadata: { duration: 2340, model: 'text-embedding-3-large' } },
-  { id: 'log-4', timestamp: '2024-01-20T14:32:12.234Z', level: 'error', service: 'cache-api', message: 'Failed to connect to vector store', metadata: { error: 'Connection timeout', retries: 3, store: 'qdrant' } },
-  { id: 'log-5', timestamp: '2024-01-20T14:32:11.567Z', level: 'info', service: 'invalidation-service', message: 'Invalidated 42 cache entries for model gpt-4o', metadata: { model: 'gpt-4o', count: 42, trigger: 'model_update' } },
-  { id: 'log-6', timestamp: '2024-01-20T14:32:10.890Z', level: 'debug', service: 'cache-api', message: 'L2 similarity search completed', metadata: { candidates: 150, threshold: 0.85, matches: 3 } },
-  { id: 'log-7', timestamp: '2024-01-20T14:32:09.123Z', level: 'info', service: 'cost-tracker', message: 'Monthly cost threshold 80% reached', metadata: { current: 847.32, threshold: 1000, period: '2024-01' } },
-  { id: 'log-8', timestamp: '2024-01-20T14:32:08.456Z', level: 'info', service: 'rate-limiter', message: 'Rate limit exceeded for tenant premium-user', metadata: { tenant: 'premium-user', limit: 1000, window: '1m' } },
-  { id: 'log-9', timestamp: '2024-01-20T14:32:07.789Z', level: 'debug', service: 'embedding-worker', message: 'Batch embedding request received', metadata: { batchSize: 10, texts: 10 } },
-  { id: 'log-10', timestamp: '2024-01-20T14:32:06.234Z', level: 'info', service: 'cache-api', message: 'Request routed to fallback model', metadata: { primary: 'gpt-4o', fallback: 'gpt-4o-mini', reason: 'latency_threshold' } },
-  { id: 'log-11', timestamp: '2024-01-20T14:32:05.567Z', level: 'warn', service: 'cache-api', message: 'L3 cache layer unavailable, falling back to L2', metadata: { layer: 'L3', fallback: 'L2' } },
-  { id: 'log-12', timestamp: '2024-01-20T14:32:04.890Z', level: 'info', service: 'health-check', message: 'All services healthy', metadata: { services: ['cache-api', 'embedding-worker', 'invalidation-service', 'qdrant', 'redis'] } },
-]
+interface LogEntry {
+  id: string
+  timestamp: string
+  level: string
+  service: string
+  message: string
+  metadata: Record<string, unknown>
+}
+
+const toLogEntry = (req: Request): LogEntry => {
+  const hit = req.cache.status === 'HIT'
+  return {
+    id: req.id,
+    timestamp: req.timestamp,
+    level: req.status === 'OK' ? 'info' : 'error',
+    service: hit ? 'cache-api' : 'api-server',
+    message: hit
+      ? `Cache hit (${req.cache.layer}) | ${req.model} — saved ${req.cache.tokensSaved} tokens, ${req.cache.latencySaved}ms`
+      : `${req.status} | ${req.model} via ${req.endpoint} — ${req.latency}ms`,
+    metadata: {
+      layer: req.cache.layer,
+      cacheStatus: req.cache.status,
+      model: req.model,
+      provider: req.provider,
+      latency: req.latency,
+      tokensSaved: req.cache.tokensSaved,
+      latencySaved: req.cache.latencySaved,
+      cost: req.cost,
+    },
+  }
+}
 
 const PAGE_SIZES = [25, 50, 100, 200]
 
+const DEFAULT_FILTERS = { status: 'all', model: 'all', provider: 'all', cache: 'all', endpoint: 'all', timeRange: '24h', search: '' }
+
 export function Logs() {
-  const [logs, setLogs] = useState(MOCK_LOGS)
+  const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [levelFilter, setLevelFilter] = useState<string>('all')
   const [serviceFilter, setServiceFilter] = useState<string>('all')
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'asc' | 'desc' }>({ column: 'timestamp', direction: 'desc' })
-  const [pagination, setPagination] = useState({ page: 1, pageSize: 50, total: MOCK_LOGS.length })
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 50, total: 0 })
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
+
+  const loadLogs = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await getApiClient().getRequests(DEFAULT_FILTERS as never, { page: 1, pageSize: 200, total: 0 }, { column: 'timestamp', direction: 'desc' })
+      const entries = (res.data ?? []).map(toLogEntry)
+      setLogs(entries)
+      setPagination(prev => ({ ...prev, total: entries.length }))
+    } catch {
+      setLogs([])
+      setPagination(prev => ({ ...prev, total: 0 }))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadLogs()
+  }, [loadLogs])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => loadLogs(), 10000)
+    return () => clearInterval(interval)
+  }, [autoRefresh, loadLogs])
 
   const services = useMemo(() => [...new Set(logs.map(l => l.service))], [logs])
 
@@ -110,10 +159,8 @@ export function Logs() {
     setPagination({ ...pagination, pageSize, page: 1 })
   }
 
-  const handleRefresh = async () => {
-    setLoading(true)
-    await new Promise(r => setTimeout(r, 500))
-    setLoading(false)
+  const handleRefresh = () => {
+    loadLogs()
   }
 
   const getLevelIcon = (level: string) => {
@@ -140,7 +187,7 @@ export function Logs() {
             <FileText className="w-6 h-6" />
             Logs
           </h1>
-          <p className="page-description">Real-time system logs and debugging information</p>
+          <p className="page-description">Live request activity derived from cache traffic</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={handleRefresh} disabled={loading}>

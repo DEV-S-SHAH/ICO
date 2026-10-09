@@ -6,6 +6,8 @@ import {
   Filter,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Copy,
   Eye,
@@ -40,7 +42,6 @@ import {
 } from '@/components/common'
 import { useUIStore, useDataStore, useSelectionStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { mockRequests } from '@/data/mock'
 import type { Request, FilterState, SortState, PaginationState, CacheStatus, RequestStatus, CacheDecision } from '@/types'
 
 const PAGE_SIZES = [10, 25, 50, 100]
@@ -60,40 +61,23 @@ const CACHE_OPTIONS = [
   { value: 'SKIPPED', label: 'Skipped' },
 ]
 
-const MODEL_OPTIONS = [
-  { value: 'all', label: 'All Models' },
-  { value: 'claude-sonnet-4.6', label: 'claude-sonnet-4.6' },
-  { value: 'claude-opus-4.5', label: 'claude-opus-4.5' },
-  { value: 'gpt-5', label: 'gpt-5' },
-  { value: 'gpt-5-mini', label: 'gpt-5-mini' },
-  { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
-  { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
-  { value: 'qwen-2.5-72b', label: 'qwen-2.5-72b' },
-  { value: 'llama-3.1-405b', label: 'llama-3.1-405b' },
-  { value: 'llama-3.1-70b', label: 'llama-3.1-70b' },
-  { value: 'mistral-large-2', label: 'mistral-large-2' },
-]
-
-const PROVIDER_OPTIONS = [
-  { value: 'all', label: 'All Providers' },
-  { value: 'Anthropic', label: 'Anthropic' },
-  { value: 'OpenAI', label: 'OpenAI' },
-  { value: 'Google', label: 'Google' },
-  { value: 'Alibaba', label: 'Alibaba' },
-  { value: 'Meta', label: 'Meta' },
-  { value: 'Mistral', label: 'Mistral' },
-]
-
-const ENDPOINT_OPTIONS = [
-  { value: 'all', label: 'All Endpoints' },
-  { value: '/v1/messages', label: '/v1/messages' },
-  { value: '/v1/chat/completions', label: '/v1/chat/completions' },
-  { value: '/v1/completions', label: '/v1/completions' },
-  { value: '/v1/embeddings', label: '/v1/embeddings' },
-]
+// Build Select options from live request data so the UI only ever shows
+// models/providers/endpoints that actually exist in the backend.
+function buildFilterOptions(label: string, ...sources: Array<Array<string | undefined>>): Array<{ value: string; label: string }> {
+  const values = new Set<string>()
+  for (const source of sources) {
+    for (const value of source) {
+      if (value) values.add(value)
+    }
+  }
+  return [
+    { value: 'all', label },
+    ...[...values].sort((a, b) => a.localeCompare(b)).map(value => ({ value, label: value })),
+  ]
+}
 
 export function Requests() {
-  const { demoMode, liveTick, latestLiveRequest } = useUIStore()
+  const { liveTick, latestLiveRequest } = useUIStore()
   const {
     requests,
     requestsFilters,
@@ -104,51 +88,44 @@ export function Requests() {
     setRequestsPagination,
     setRequestsSort,
   } = useDataStore()
+  const { models, providers } = useDataStore()
   const { selectedRequestIds, toggleRequestSelection, selectAllRequests, clearRequestSelection } = useSelectionStore()
 
   const [loading, setLoading] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [sortConfig, setSortConfig] = useState<SortState>(requestsSort)
 
-  // Load data (real API in live mode; mock only in demo mode)
+  // Filter options derived from live data only
+  const modelOptions = useMemo(
+    () => buildFilterOptions('All Models', models.map(m => m.name), requests.map(r => r.model)),
+    [models, requests]
+  )
+  const providerOptions = useMemo(
+    () => buildFilterOptions('All Providers', providers.map(p => p.name), requests.map(r => r.provider)),
+    [providers, requests]
+  )
+  const endpointOptions = useMemo(
+    () => buildFilterOptions('All Endpoints', requests.map(r => r.endpoint)),
+    [requests]
+  )
+
+  // Load data (real API)
   useEffect(() => {
     async function loadRequests() {
-      if (liveTick === 0 || demoMode) setLoading(true)
+      if (liveTick === 0) setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const response = await api.getRequests(requestsFilters, requestsPagination, sortConfig)
         setRequests(response.data)
         setRequestsPagination({ total: response.meta?.total || 0 })
       } catch (error) {
         console.error('Failed to load requests:', error)
-        if (!demoMode) return
-        // Demo mode only: mock data with client-side filtering
-        let filtered = [...mockRequests]
-        if (requestsFilters.status !== 'all') filtered = filtered.filter(r => r.status === requestsFilters.status)
-        if (requestsFilters.model !== 'all') filtered = filtered.filter(r => r.model === requestsFilters.model)
-        if (requestsFilters.provider !== 'all') filtered = filtered.filter(r => r.provider === requestsFilters.provider)
-        if (requestsFilters.cache !== 'all') filtered = filtered.filter(r => r.cache.status === requestsFilters.cache)
-        if (requestsFilters.endpoint !== 'all') filtered = filtered.filter(r => r.endpoint === requestsFilters.endpoint)
-        if (requestsFilters.search) {
-          const search = requestsFilters.search.toLowerCase()
-          filtered = filtered.filter(r => r.id.toLowerCase().includes(search) || r.model.toLowerCase().includes(search))
-        }
-        filtered.sort((a, b) => {
-          const aVal = a[sortConfig.column as keyof Request]
-          const bVal = b[sortConfig.column as keyof Request]
-          if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1
-          if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1
-          return 0
-        })
-        const start = (requestsPagination.page - 1) * requestsPagination.pageSize
-        setRequests(filtered.slice(start, start + requestsPagination.pageSize))
-        setRequestsPagination({ total: filtered.length })
       } finally {
         setLoading(false)
       }
     }
     loadRequests()
-  }, [demoMode, liveTick, requestsFilters, requestsPagination.page, requestsPagination.pageSize, sortConfig, setRequests, setRequestsPagination])
+  }, [liveTick, requestsFilters, requestsPagination.page, requestsPagination.pageSize, sortConfig, setRequests, setRequestsPagination])
 
   // Handle sorting
   const handleSort = useCallback((column: string) => {
@@ -213,7 +190,7 @@ export function Requests() {
           <Button variant="secondary" size="sm" onClick={() => setShowFilters(!showFilters)}>
             <Filter className="w-4 h-4" />
             Filters
-            {hasActiveFilters && <Badge variant="accent" className="ml-1">Active</Badge>}
+            {hasActiveFilters && <Badge variant="info" className="ml-1">Active</Badge>}
           </Button>
         </div>
       </div>
@@ -243,12 +220,12 @@ export function Requests() {
             <Select
               value={requestsFilters.model}
               onChange={(e) => handleFilterChange('model', e.target.value as FilterState['model'])}
-              options={MODEL_OPTIONS}
+              options={modelOptions}
             />
             <Select
               value={requestsFilters.provider}
               onChange={(e) => handleFilterChange('provider', e.target.value as FilterState['provider'])}
-              options={PROVIDER_OPTIONS}
+              options={providerOptions}
             />
             <Select
               value={requestsFilters.cache}
@@ -258,7 +235,7 @@ export function Requests() {
             <Select
               value={requestsFilters.endpoint}
               onChange={(e) => handleFilterChange('endpoint', e.target.value as FilterState['endpoint'])}
-              options={ENDPOINT_OPTIONS}
+              options={endpointOptions}
             />
           </div>
         </Card>

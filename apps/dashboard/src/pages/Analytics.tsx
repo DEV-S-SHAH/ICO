@@ -1,12 +1,10 @@
 // Analytics Page
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   BarChart3,
   LineChart,
   PieChart,
-  TrendingUp,
-  TrendingDown,
   Download,
   RefreshCw,
 } from 'lucide-react'
@@ -27,6 +25,9 @@ import {
   ModelComparisonChart,
   Sparkline,
 } from '@/components/charts'
+import { useUIStore, useDataStore } from '@/lib/stores'
+import { apiClient } from '@/lib/api/client'
+import type { TimeSeriesPoint, Request } from '@/types'
 
 
 const TIME_RANGES = [
@@ -38,50 +39,112 @@ const TIME_RANGES = [
   { value: '90d', label: 'Last 90 Days' },
 ]
 
-const MOCK_ANALYTICS = {
-  overview: {
-    totalRequests: 287432,
-    avgLatency: 287,
-    cacheHitRate: 0.73,
-    totalCost: 124.56,
-    errorRate: 0.002,
-    tokensUsed: 45678900,
-    uniqueUsers: 1234,
-    activeModels: 8,
-  },
-  trends: {
-    requests: [1200, 1350, 1100, 1450, 1600, 1300, 1250, 1400, 1550, 1680, 1720, 1650],
-    cost: [4.2, 4.8, 3.9, 5.1, 5.6, 4.5, 4.3, 4.9, 5.4, 5.8, 6.0, 5.7],
-    latency: [245, 267, 234, 289, 312, 278, 256, 298, 324, 345, 332, 318],
-    hitRate: [0.71, 0.72, 0.70, 0.73, 0.74, 0.72, 0.71, 0.73, 0.75, 0.76, 0.75, 0.74],
-  },
-  byModel: [
-    { name: 'gpt-4o', requests: 98234, cost: 67.80, cacheHitRate: 0.68, tokens: 15678900 },
-    { name: 'gpt-4o-mini', requests: 87562, cost: 12.40, cacheHitRate: 0.78, tokens: 8923400 },
-    { name: 'claude-3.5-sonnet', requests: 45678, cost: 34.20, cacheHitRate: 0.71, tokens: 12345600 },
-    { name: 'claude-3-haiku', requests: 34210, cost: 6.80, cacheHitRate: 0.82, tokens: 5678900 },
-    { name: 'gpt-3.5-turbo', requests: 21456, cost: 3.36, cacheHitRate: 0.85, tokens: 3210000 },
-  ],
-  byProvider: [
-    { provider: 'OpenAI', requests: 155252, cost: 83.56, latency: 312, hitRate: 0.72 },
-    { provider: 'Anthropic', requests: 79888, cost: 41.00, latency: 256, hitRate: 0.75 },
-    { provider: 'Local', requests: 52292, cost: 0, latency: 45, hitRate: 0.89 },
-  ],
-  byCacheLayer: [
-    { layer: 'L1', hits: 12456, misses: 2345, hitRate: 0.84, latency: 2, color: '#FF6B3D' },
-    { layer: 'L2', hits: 89234, misses: 34567, hitRate: 0.72, latency: 45, color: '#60A5FA' },
-    { layer: 'L3', hits: 56789, misses: 45231, hitRate: 0.56, latency: 156, color: '#F59E0B' },
-  ],
+const LAYER_COLORS: Record<string, string> = {
+  L0: '#FF6B3D',
+  L0b: '#FF9E3D',
+  L1: '#FF6B3D',
+  L2: '#60A5FA',
+  L3: '#F59E0B',
+}
+
+// Real cache hit-rate trend bucketed from actual request logs
+function bucketHitRate(requests: Request[]): TimeSeriesPoint[] {
+  const buckets = new Map<string, { hits: number; total: number }>()
+  for (const r of requests) {
+    if (!r.timestamp) continue
+    const key = new Date(r.timestamp).toISOString().slice(0, 13)
+    const bucket = buckets.get(key) || { hits: 0, total: 0 }
+    bucket.total += 1
+    if (r.cache?.status === 'HIT') bucket.hits += 1
+    buckets.set(key, bucket)
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([timestamp, b]) => ({ timestamp, value: b.total ? b.hits / b.total : 0 }))
 }
 
 export function Analytics() {
+  const { liveTick } = useUIStore()
+  const { overviewMetrics, models, providers, cacheMetrics, requests } = useDataStore()
   const [timeRange, setTimeRange] = useState('24h')
   const [activeTab, setActiveTab] = useState('overview')
+  const [trends, setTrends] = useState<{ requests: TimeSeriesPoint[]; latency: TimeSeriesPoint[]; cost: TimeSeriesPoint[] }>({
+    requests: [],
+    latency: [],
+    cost: [],
+  })
 
-  const overview = MOCK_ANALYTICS.overview
-  const byModel = MOCK_ANALYTICS.byModel
-  const byProvider = MOCK_ANALYTICS.byProvider
-  const byCacheLayer = MOCK_ANALYTICS.byCacheLayer
+  // Load real time series whenever the range changes or the backend pushes events
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const [requestsSeries, latencySeries, costSeries] = await Promise.all([
+          apiClient.getTimeSeries('requests', timeRange as any),
+          apiClient.getTimeSeries('latency', timeRange as any),
+          apiClient.getTimeSeries('cost', timeRange as any),
+        ])
+        if (!cancelled) setTrends({ requests: requestsSeries, latency: latencySeries, cost: costSeries })
+      } catch {
+        // keep last values
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [timeRange, liveTick])
+
+  const totalRequestsLive = requests.length || Number(overviewMetrics?.requests.value ?? 0) || 0
+  const avgLatencyLive = requests.length ? requests.reduce((s, r) => s + r.latency, 0) / requests.length : 0
+  const cacheHitRateLive = cacheMetrics?.hitRate ?? (requests.length ? requests.filter(r => r.cache.status === 'HIT').length / requests.length : 0)
+  const totalCostLive = requests.reduce((s, r) => s + r.cost.total, 0)
+
+  const overview = {
+    totalRequests: totalRequestsLive,
+    avgLatency: avgLatencyLive,
+    cacheHitRate: cacheHitRateLive,
+    totalCost: totalCostLive,
+    tokensUsed: models.reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0),
+    errorRate: providers.length ? providers.reduce((sum, p) => sum + p.errorRate, 0) / providers.length : 0,
+    activeModels: models.length,
+  }
+
+  const byModel = models.map((m) => ({
+    name: m.name,
+    requests: m.requests,
+    cost: m.cost,
+    cacheHitRate: m.cacheHitRate,
+    tokens: m.inputTokens + m.outputTokens,
+    latency: m.avgLatency,
+    hitRate: m.cacheHitRate,
+  }))
+
+  const byProvider = providers.map((p) => ({
+    provider: p.name,
+    requests: p.requests,
+    cost: p.cost,
+    latency: p.avgLatency,
+    hitRate: cacheMetrics?.hitRate ?? 0,
+  }))
+
+  const byCacheLayer = Object.entries(cacheMetrics?.layers ?? {}).map(([layer, l]) => {
+    const requestsCount = l?.requests ?? 0
+    const hits = Math.round(requestsCount * (l?.hitRate ?? 0))
+    return {
+      layer,
+      hits,
+      misses: requestsCount - hits,
+      hitRate: l?.hitRate ?? 0,
+      latency: l?.latencySaved ?? 0,
+      color: LAYER_COLORS[layer] || '#60A5FA',
+    }
+  })
+
+  const hitRateTrend = bucketHitRate(requests)
+  const totalTokensUsed = overview.tokensUsed
+  const promptTokens = models.reduce((sum, m) => sum + m.inputTokens, 0)
+  const completionTokens = models.reduce((sum, m) => sum + m.outputTokens, 0)
+  const tokensSavedByCache = models.reduce((sum, m) => sum + m.cachedTokens, 0)
+  const totalProviderErrors = providers.reduce((sum, p) => sum + p.errors, 0)
 
   return (
     <div className="space-y-6">
@@ -141,15 +204,12 @@ export function Analytics() {
                   <div>
                     <p className="text-metadata text-text-muted">TOTAL REQUESTS</p>
                     <p className="text-2xl font-semibold font-mono tabular-nums">{formatNumber(overview.totalRequests)}</p>
-                    <p className="text-caption text-success mt-1 flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" /> +12.5% vs prev
-                    </p>
                   </div>
                   <div className="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center">
                     <LineChart className="w-6 h-6 text-blue-500" />
                   </div>
                 </div>
-                <Sparkline data={MOCK_ANALYTICS.trends.requests.map((value, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value }))} className="mt-3 h-12" color="#3B82F6" />
+                <Sparkline data={trends.requests} className="mt-3 h-12" color="#3B82F6" />
               </CardContent>
             </Card>
             <Card>
@@ -158,15 +218,12 @@ export function Analytics() {
                   <div>
                     <p className="text-metadata text-text-muted">AVG LATENCY</p>
                     <p className="text-2xl font-semibold font-mono tabular-nums">{formatDuration(overview.avgLatency)}</p>
-                    <p className="text-caption text-success mt-1 flex items-center gap-1">
-                      <TrendingDown className="w-3 h-3" /> -8.2% vs prev
-                    </p>
                   </div>
                   <div className="w-12 h-12 rounded-lg bg-green-500/10 flex items-center justify-center">
                     <BarChart3 className="w-6 h-6 text-green-500" />
                   </div>
                 </div>
-                <Sparkline data={MOCK_ANALYTICS.trends.latency.map((value, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value }))} className="mt-3 h-12" color="#22C55E" />
+                <Sparkline data={trends.latency} className="mt-3 h-12" color="#22C55E" />
               </CardContent>
             </Card>
             <Card>
@@ -175,15 +232,12 @@ export function Analytics() {
                   <div>
                     <p className="text-metadata text-text-muted">CACHE HIT RATE</p>
                     <p className="text-2xl font-semibold font-mono tabular-nums">{formatPercent(overview.cacheHitRate)}</p>
-                    <p className="text-caption text-success mt-1 flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" /> +3.1% vs prev
-                    </p>
                   </div>
                   <div className="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center">
                     <PieChart className="w-6 h-6 text-purple-500" />
                   </div>
                 </div>
-                <Sparkline data={MOCK_ANALYTICS.trends.hitRate.map((value, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value }))} className="mt-3 h-12" color="#A855F7" />
+                <Sparkline data={hitRateTrend} className="mt-3 h-12" color="#A855F7" />
               </CardContent>
             </Card>
             <Card>
@@ -192,15 +246,12 @@ export function Analytics() {
                   <div>
                     <p className="text-metadata text-text-muted">TOTAL COST</p>
                     <p className="text-2xl font-semibold font-mono tabular-nums">{formatCurrency(overview.totalCost)}</p>
-                    <p className="text-caption text-error mt-1 flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" /> +5.4% vs prev
-                    </p>
                   </div>
                   <div className="w-12 h-12 rounded-lg bg-orange-500/10 flex items-center justify-center">
                     <BarChart3 className="w-6 h-6 text-orange-500" />
                   </div>
                 </div>
-                <Sparkline data={MOCK_ANALYTICS.trends.cost.map((value, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value }))} className="mt-3 h-12" color="#F97316" />
+                <Sparkline data={trends.cost} className="mt-3 h-12" color="#F97316" />
               </CardContent>
             </Card>
           </div>
@@ -214,7 +265,7 @@ export function Analytics() {
                   <Badge variant="outline">{formatNumber(overview.totalRequests)} total</Badge>
                 </div>
                 <RequestVolumeChart 
-                  data={MOCK_ANALYTICS.trends.requests.map((value, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value }))}
+                  data={trends.requests}
                   metric="requests"
                   height={300}
                 />
@@ -227,7 +278,7 @@ export function Analytics() {
                   <Badge variant="outline">{formatCurrency(overview.totalCost)} total</Badge>
                 </div>
                 <CostChart 
-                  data={byModel.map(m => ({ name: m.name, input: m.cost * 0.6, output: m.cost * 0.3, cached: m.cost * 0.1 }))}
+                  data={trends.cost.map(point => ({ name: new Date(point.timestamp).toLocaleTimeString(), input: point.value, output: 0, cached: 0 }))}
                   height={300}
                 />
               </CardContent>
@@ -256,6 +307,7 @@ export function Analytics() {
                 </div>
                 <ModelComparisonChart 
                   data={byModel.map(m => ({ name: m.name, requests: m.requests, cacheHitRate: m.cacheHitRate, cost: m.cost }))}
+                  metric="cacheHitRate"
                   height={300}
                 />
               </CardContent>
@@ -270,20 +322,23 @@ export function Analytics() {
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-body">Total Tokens</span>
-                      <span className="font-mono tabular-nums">{formatNumber(overview.tokensUsed)}</span>
+                      <span className="text-body">Total Tokens (used)</span>
+                      <span className="font-mono tabular-nums">{formatNumber(totalTokensUsed)}</span>
                     </div>
-                    <Progress value={85} max={100} className="h-2" />
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-metadata text-text-muted">Prompt Tokens</p>
+                        <p className="font-mono tabular-nums">{formatNumber(promptTokens)}</p>
+                      </div>
+                      <div>
+                        <p className="text-metadata text-text-muted">Completion Tokens</p>
+                        <p className="font-mono tabular-nums">{formatNumber(completionTokens)}</p>
+                      </div>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-metadata text-text-muted">Prompt Tokens</p>
-                      <p className="font-mono tabular-nums">{formatNumber(Math.floor(overview.tokensUsed * 0.6))}</p>
-                    </div>
-                    <div>
-                      <p className="text-metadata text-text-muted">Completion Tokens</p>
-                      <p className="font-mono tabular-nums">{formatNumber(Math.floor(overview.tokensUsed * 0.4))}</p>
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-body">Tokens Saved (cache)</span>
+                    <span className="font-mono tabular-nums text-success">{formatNumber(tokensSavedByCache)}</span>
                   </div>
                 </div>
               </CardContent>
@@ -294,22 +349,19 @@ export function Analytics() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-body">Error Rate</span>
-                    <Badge variant="success">{formatPercent(overview.errorRate)}</Badge>
+                    <Badge variant={overview.errorRate > 0.01 ? 'error' : 'success'}>{formatPercent(overview.errorRate)}</Badge>
                   </div>
-                  <Progress value={overview.errorRate * 100} max={1} className="h-2" />
-                  <div className="grid grid-cols-3 gap-4 pt-2">
-                    <div className="text-center">
-                      <p className="text-2xl font-semibold font-mono tabular-nums text-error">12</p>
-                      <p className="text-caption text-text-muted">Timeout</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-semibold font-mono tabular-nums text-warning">8</p>
-                      <p className="text-caption text-text-muted">Rate Limited</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-semibold font-mono tabular-nums text-info">3</p>
-                      <p className="text-caption text-text-muted">Validation</p>
-                    </div>
+                  <Progress value={Math.min(overview.errorRate * 100, 100)} max={100} className="h-2" />
+                  <div className="pt-2 space-y-2">
+                    {providers.length === 0 && (
+                      <p className="text-metadata text-text-muted">No provider activity recorded yet</p>
+                    )}
+                    {providers.map(p => (
+                      <div key={p.id} className="flex items-center justify-between">
+                        <span className="text-body text-text-muted">{p.name}</span>
+                        <span className="font-mono tabular-nums text-error">{formatNumber(p.errors)} errors</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </CardContent>
@@ -326,6 +378,7 @@ export function Analytics() {
               <h3 className="font-medium mb-4">Model Performance Comparison</h3>
               <ModelComparisonChart 
                 data={byModel.map(m => ({ name: m.name, requests: m.requests, cacheHitRate: m.cacheHitRate, cost: m.cost }))}
+                metric="cost"
                 height={400}
               />
             </CardContent>
@@ -355,7 +408,7 @@ export function Analytics() {
                         <td className="font-mono tabular-nums text-right">{formatDuration(model.latency)}</td>
                         <td><Badge variant={model.hitRate > 0.8 ? 'success' : model.hitRate > 0.7 ? 'info' : 'warning'}>{formatPercent(model.hitRate)}</Badge></td>
                         <td className="font-mono tabular-nums text-right">{formatNumber(model.tokens)}</td>
-                        <td className="font-mono tabular-nums text-right">{formatCurrency(model.cost / (model.tokens / 1000))}/1k</td>
+                        <td className="font-mono tabular-nums text-right">{formatCurrency(model.cost / (model.tokens > 0 ? model.tokens / 1000 : 1))}/1k</td>
                       </tr>
                     ))}
                   </tbody>
@@ -390,9 +443,7 @@ export function Analytics() {
                         <td>
                           <div className="flex items-center gap-2">
                             <div className="w-8 h-8 rounded flex items-center justify-center bg-accent/10">
-                              {provider.provider === 'OpenAI' && <span className="text-accent font-bold">OAI</span>}
-                              {provider.provider === 'Anthropic' && <span className="text-purple-400 font-bold">ANT</span>}
-                              {provider.provider === 'Local' && <span className="text-green-400 font-bold">LOC</span>}
+                              <span className="text-accent font-bold">{provider.provider.slice(0, 3).toUpperCase()}</span>
                             </div>
                             <span className="font-medium">{provider.provider}</span>
                           </div>
@@ -403,7 +454,7 @@ export function Analytics() {
                         <td><Badge variant={provider.hitRate > 0.8 ? 'success' : 'info'}>{formatPercent(provider.hitRate)}</Badge></td>
                         <td>
                           <div className="w-32">
-                            <Progress value={(provider.cost / overview.totalCost) * 100} max={100} className="h-2" />
+                            <Progress value={overview.totalCost > 0 ? (provider.cost / overview.totalCost) * 100 : 0} max={100} className="h-2" />
                           </div>
                         </td>
                       </tr>
@@ -446,7 +497,7 @@ export function Analytics() {
                       <span className="font-mono tabular-nums text-error">{formatNumber(layer.misses)}</span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-body text-text-secondary">Avg Latency</span>
+                      <span className="text-body text-text-secondary">Latency Saved</span>
                       <span className="font-mono tabular-nums">{formatDuration(layer.latency)}</span>
                     </div>
                     <div className="flex items-center justify-between">
@@ -470,8 +521,9 @@ export function Analytics() {
             <Card>
               <CardContent className="pt-4">
                 <h3 className="font-medium mb-4">Request Volume Trend</h3>
-                <RequestVolumeChart 
-                  data={MOCK_ANALYTICS.trends.requests.map((count, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value: count }))}
+                <RequestVolumeChart
+                  data={trends.requests}
+                  metric="requests"
                   height={300}
                 />
               </CardContent>
@@ -479,8 +531,9 @@ export function Analytics() {
             <Card>
               <CardContent className="pt-4">
                 <h3 className="font-medium mb-4">Latency Trend</h3>
-                <RequestVolumeChart 
-                  data={MOCK_ANALYTICS.trends.latency.map((latency, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value: latency }))}
+                <RequestVolumeChart
+                  data={trends.latency}
+                  metric="latency"
                   height={300}
                 />
               </CardContent>
@@ -488,8 +541,8 @@ export function Analytics() {
             <Card>
               <CardContent className="pt-4">
                 <h3 className="font-medium mb-4">Cost Trend</h3>
-                <CostChart 
-                  data={MOCK_ANALYTICS.trends.cost.map((cost, i) => ({ name: `${i}h ago`, input: cost * 0.6, output: cost * 0.3, cached: cost * 0.1 }))}
+                <CostChart
+                  data={trends.cost.map(point => ({ name: new Date(point.timestamp).toLocaleTimeString(), input: point.value, output: 0, cached: 0 }))}
                   height={300}
                 />
               </CardContent>
@@ -497,8 +550,9 @@ export function Analytics() {
             <Card>
               <CardContent className="pt-4">
                 <h3 className="font-medium mb-4">Hit Rate Trend</h3>
-                <RequestVolumeChart 
-                  data={MOCK_ANALYTICS.trends.hitRate.map((rate, i) => ({ timestamp: new Date(Date.now() - (11-i)*3600000).toISOString(), value: rate }))}
+                <RequestVolumeChart
+                  data={hitRateTrend}
+                  metric="requests"
                   height={300}
                 />
               </CardContent>

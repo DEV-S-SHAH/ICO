@@ -35,7 +35,6 @@ import { CacheLayerMetric, TotalCacheHitRate } from '@/components/metrics'
 import { CachePerformanceChart, ModelComparisonChart } from '@/components/charts'
 import { useUIStore, useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { mockCacheMetrics, mockCacheEntries } from '@/data/mock'
 import type { CacheMetrics, CacheEntry, PaginationState, SortState } from '@/types'
 
 const PAGE_SIZES = [25, 50, 100, 200]
@@ -56,7 +55,7 @@ const STATUS_OPTIONS = [
 ]
 
 export function Cache() {
-  const { demoMode, liveTick } = useUIStore()
+  const { liveTick } = useUIStore()
   const {
     cacheMetrics,
     setCacheMetrics,
@@ -68,62 +67,46 @@ export function Cache() {
     setCachePagination,
     cacheSort,
     setCacheSort,
+    models,
   } = useDataStore()
 
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'entries' | 'analytics'>('overview')
 
-  // Load cache metrics (mock only in demo mode)
+  // Load cache metrics
   useEffect(() => {
     async function loadCacheMetrics() {
-      if (liveTick === 0 || demoMode) setLoading(true)
+      if (liveTick === 0) setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const metrics = await api.getCacheMetrics()
         setCacheMetrics(metrics)
       } catch {
-        if (demoMode) setCacheMetrics(mockCacheMetrics)
+        // keep last known values
       } finally {
         setLoading(false)
       }
     }
     loadCacheMetrics()
-  }, [demoMode, liveTick, setCacheMetrics])
+  }, [liveTick, setCacheMetrics])
 
   // Load cache entries
   useEffect(() => {
     async function loadCacheEntries() {
-      if (liveTick === 0 || demoMode) setLoading(true)
+      if (liveTick === 0) setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const response = await api.getCacheEntries(cacheFilters, cachePagination, cacheSort)
         setCacheEntries(response.data)
         setCachePagination({ total: response.meta?.total || 0 })
       } catch {
-        if (!demoMode) return
-        // Demo mode only: client-side filtering with mock data
-        let filtered = [...mockCacheEntries]
-        if (cacheFilters.layer) filtered = filtered.filter(e => e.layer === cacheFilters.layer)
-        if (cacheFilters.model) filtered = filtered.filter(e => e.model === cacheFilters.model)
-        if (cacheFilters.status) filtered = filtered.filter(e => e.status === cacheFilters.status)
-        
-        filtered.sort((a, b) => {
-          const aVal = a[cacheSort.column as keyof CacheEntry]
-          const bVal = b[cacheSort.column as keyof CacheEntry]
-          if (aVal < bVal) return cacheSort.direction === 'asc' ? -1 : 1
-          if (aVal > bVal) return cacheSort.direction === 'asc' ? 1 : -1
-          return 0
-        })
-        
-        const start = (cachePagination.page - 1) * cachePagination.pageSize
-        setCacheEntries(filtered.slice(start, start + cachePagination.pageSize))
-        setCachePagination({ total: filtered.length })
+        // keep last known values
       } finally {
         setLoading(false)
       }
     }
     loadCacheEntries()
-  }, [demoMode, liveTick, cacheFilters, cachePagination.page, cachePagination.pageSize, cacheSort, setCacheEntries, setCachePagination])
+  }, [liveTick, cacheFilters, cachePagination.page, cachePagination.pageSize, cacheSort, setCacheEntries, setCachePagination])
 
   const metrics = cacheMetrics
   const totalHitRate = metrics?.hitRate || 0
@@ -164,7 +147,7 @@ export function Cache() {
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs defaultValue="overview" value={activeTab} onValueChange={(v) => setActiveTab(v as 'overview' | 'entries' | 'analytics')}>
         <TabsList>
           <TabsTrigger value="overview">
             <Database className="w-4 h-4 mr-2" />
@@ -381,7 +364,7 @@ export function Cache() {
                           <td>
                             <Badge
                               variant={
-                                entry.layer === 'L1' ? 'accent' :
+                                entry.layer === 'L1' ? 'info' :
                                 entry.layer === 'L2' ? 'info' : 'warning'
                               }
                             >
@@ -462,13 +445,7 @@ export function Cache() {
               <CardContent className="pt-4">
                 <h3 className="text-section-title mb-4">MODEL CACHE PERFORMANCE</h3>
                 <ModelComparisonChart
-                  data={[
-                    { name: 'claude-sonnet-4.6', requests: 128492, cacheHitRate: 0.782, cost: 24.50 },
-                    { name: 'gpt-5', requests: 98234, cacheHitRate: 0.715, cost: 31.20 },
-                    { name: 'gemini-2.5-pro', requests: 67891, cacheHitRate: 0.653, cost: 18.90 },
-                    { name: 'llama-3.1-405b', requests: 45672, cacheHitRate: 0.821, cost: 12.40 },
-                    { name: 'gpt-5-mini', requests: 43102, cacheHitRate: 0.698, cost: 8.75 },
-                  ]}
+                  data={models.map((m) => ({ name: m.name, requests: m.requests, cacheHitRate: m.cacheHitRate, cost: m.cost }))}
                   metric="cacheHitRate"
                   height={300}
                 />
@@ -481,9 +458,9 @@ export function Cache() {
                 <h3 className="text-section-title mb-4">CACHE EFFICIENCY</h3>
                 <ModelComparisonChart
                   data={[
-                    { name: 'L1 Exact', requests: 0, cacheHitRate: l1Rate * 100, cost: 0 },
-                    { name: 'L2 Semantic', requests: 0, cacheHitRate: l2Rate * 100, cost: 0 },
-                    { name: 'L3 Context', requests: 0, cacheHitRate: l3Rate * 100, cost: 0 },
+                    { name: 'L1 Exact', requests: 0, cacheHitRate: l1Rate, cost: 0 },
+                    { name: 'L2 Semantic', requests: 0, cacheHitRate: l2Rate, cost: 0 },
+                    { name: 'L3 Context', requests: 0, cacheHitRate: l3Rate, cost: 0 },
                   ]}
                   metric="cacheHitRate"
                   height={300}

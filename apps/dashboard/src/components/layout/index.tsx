@@ -152,7 +152,7 @@ interface HeaderProps {
 }
 
 export function Header({ title, description, actions }: HeaderProps) {
-  const { environment, setEnvironment, theme, setTheme, demoMode, setDemoMode, connected, latestLiveRequest } = useUIStore()
+  const { environment, setEnvironment, theme, setTheme, connected, latestLiveRequest } = useUIStore()
 
   const environments: Array<{ value: 'development' | 'staging' | 'production'; label: string; icon: React.ReactNode }> = [
     { value: 'development', label: 'Development', icon: <Monitor className="w-4 h-4" /> },
@@ -208,16 +208,6 @@ export function Header({ title, description, actions }: HeaderProps) {
           <span className={cn('w-2 h-2 rounded-full', connected ? 'bg-success' : 'bg-error')} />
           <span className="text-metadata font-medium">{connected ? 'Connected' : 'Offline'}</span>
         </div>
-
-        {/* Demo/Live Mode */}
-        <button
-          onClick={() => setDemoMode(!demoMode)}
-          title={`Click to switch to ${demoMode ? 'Live' : 'Demo'} mode`}
-          className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-bg-elevated border border-border-subtle hover:bg-bg-primary transition-colors cursor-pointer"
-        >
-          <span className={cn('w-2 h-2 rounded-full', demoMode ? 'bg-warning' : 'bg-success')} />
-          <span className="text-metadata font-medium">{demoMode ? 'DEMO' : 'LIVE'}</span>
-        </button>
 
         {/* Theme Toggle */}
         <Button

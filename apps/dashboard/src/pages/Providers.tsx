@@ -1,6 +1,6 @@
 // Providers Page
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import {
   Server,
   RefreshCw,
@@ -30,7 +30,6 @@ import {
 } from '@/components/common'
 import { useUIStore, useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { mockProviders } from '@/data/mock'
 import type { ProviderMetrics, PaginationState, SortState } from '@/types'
 
 const PAGE_SIZES = [10, 25, 50, 100]
@@ -54,7 +53,7 @@ const STATUS_BADGES = {
 }
 
 export function Providers() {
-  const { demoMode, liveTick } = useUIStore()
+  const { liveTick } = useUIStore()
   const { providers, setProviders } = useDataStore()
   const [loading, setLoading] = useState(false)
   const [sortConfig, setSortConfig] = useState<SortState>({ column: 'requests', direction: 'desc' })
@@ -64,25 +63,23 @@ export function Providers() {
   // Load providers
   useEffect(() => {
     async function loadProviders() {
-      if (liveTick === 0 || demoMode) setLoading(true)
+      if (liveTick === 0) setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const data = await api.getProviders()
         setProviders(data)
-        setPagination({ total: data.length })
+        setPagination(prev => ({ ...prev, total: data.length }))
       } catch {
-        if (!demoMode) return
-        setProviders(mockProviders)
-        setPagination({ total: mockProviders.length })
+        // keep existing data; offline indicator in header reflects state
       } finally {
         setLoading(false)
       }
     }
     loadProviders()
-  }, [demoMode, liveTick, setProviders])
+  }, [liveTick, setProviders])
 
   // Filter and sort
-  const filteredProviders = React.useMemo(() => {
+  const filteredProviders = useMemo(() => {
     let result = [...providers]
     if (search) {
       const s = search.toLowerCase()
@@ -98,7 +95,7 @@ export function Providers() {
     return result
   }, [providers, search, sortConfig])
 
-  const paginatedProviders = React.useMemo(() => {
+  const paginatedProviders = useMemo(() => {
     const start = (pagination.page - 1) * pagination.pageSize
     return filteredProviders.slice(start, start + pagination.pageSize)
   }, [filteredProviders, pagination])

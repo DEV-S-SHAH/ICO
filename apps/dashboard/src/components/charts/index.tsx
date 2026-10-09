@@ -6,6 +6,7 @@ import {
   Area,
   BarChart,
   Bar,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -45,7 +46,7 @@ export function ChartContainer({ children, className, height = 300 }: ChartConta
   return (
     <div className={cn('panel p-4', className)} style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        {children}
+        {children as React.ReactElement}
       </ResponsiveContainer>
     </div>
   )
@@ -192,7 +193,7 @@ export function CachePerformanceChart({ data, className, height = 200 }: CachePe
           maxBarSize={40}
         >
           {data.map((entry, index) => (
-            <Bar key={index} fill={entry.color} />
+            <Cell key={index} fill={entry.color} />
           ))}
         </Bar>
       </BarChart>

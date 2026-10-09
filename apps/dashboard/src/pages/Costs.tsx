@@ -33,7 +33,6 @@ import {
 import { RequestVolumeChart, CostChart, ModelComparisonChart } from '@/components/charts'
 import { useUIStore, useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { mockRequests, generateMockTimeSeries } from '@/data/mock'
 import type { Request, TimeRange, PaginationState, SortState } from '@/types'
 
 const PAGE_SIZES = [10, 25, 50, 100]
@@ -53,7 +52,7 @@ const GROUP_BY_OPTIONS = [
 ]
 
 export function Costs() {
-  const { demoMode, liveTick: requestsVersion } = useUIStore()
+  const { liveTick: requestsVersion } = useUIStore()
   const { requests, setRequests } = useDataStore()
   const [loading, setLoading] = useState(false)
   const [timeRange, setTimeRange] = useState<TimeRange>('24h')
@@ -69,33 +68,27 @@ export function Costs() {
     async function loadRequests() {
       setLoading(true)
       try {
-        const api = getApiClient(demoMode)
+        const api = getApiClient()
         const res = await api.getRequests(
           { status: 'all', model: 'all', provider: 'all', cache: 'all', endpoint: 'all', timeRange, search: '' },
           { page: 1, pageSize: 200, total: 0 },
           { column: 'timestamp', direction: 'desc' }
         )
         setRequests(res.data)
-        setPagination({ total: res.data.length })
+        setPagination(prev => ({ ...prev, total: res.data.length }))
         const data = await api.getTimeSeries(chartMetric, timeRange)
         setChartData(data)
       } catch (error) {
         console.error('Failed to load cost data:', error)
-        if (demoMode) {
-          setRequests(mockRequests)
-          setPagination({ total: mockRequests.length })
-          setChartData(generateMockTimeSeries(chartMetric, timeRange))
-        } else {
-          setRequests([])
-          setPagination({ total: 0 })
-          setChartData([])
-        }
+        setRequests([])
+        setPagination(prev => ({ ...prev, total: 0 }))
+        setChartData([])
       } finally {
         setLoading(false)
       }
     }
     loadRequests()
-  }, [demoMode, timeRange, chartMetric, setRequests, requestsVersion])
+  }, [timeRange, chartMetric, setRequests, requestsVersion])
 
   // Filter and sort requests
   const filteredRequests = useMemo(() => {

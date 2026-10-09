@@ -129,6 +129,16 @@ class PlaygroundRequest(BaseModel):
     maxTokens: Optional[int] = 1000
 
 
+class PlaygroundStreamRequest(BaseModel):
+    model: Optional[str] = None
+    systemPrompt: Optional[str] = ""
+    userPrompt: str
+    temperature: Optional[float] = 0.7
+    topP: Optional[float] = None
+    maxTokens: Optional[int] = None
+    thinking: Optional[bool] = None
+
+
 def create_demo_app(cfg: Optional[DemoConfig] = None) -> FastAPI:
     cfg = cfg or config
     app = FastAPI(
@@ -809,6 +819,125 @@ def create_demo_app(cfg: Optional[DemoConfig] = None) -> FastAPI:
         if requests_history:
             return requests_history[0]
         raise HTTPException(status_code=500, detail="Failed to process playground query")
+
+    @app.post("/v1/playground/stream")
+    async def playground_stream_endpoint(req: PlaygroundStreamRequest):
+        """
+        Stream a chat completion token-by-token from the configured OpenAI-compatible
+        provider (e.g. NVIDIA NIM), forwarding both `reasoning_content` and `content`
+        deltas so the dashboard Playground can render them in real time.
+        """
+        if not cfg.openai_api_key or not cfg.openai_base_url:
+            raise HTTPException(
+                status_code=400,
+                detail="OPENAI_API_KEY and OPENAI_BASE_URL must be configured for streaming.",
+            )
+
+        from openai import AsyncOpenAI
+
+        model = req.model or cfg.llm_model
+        messages: List[Dict[str, str]] = []
+        if req.systemPrompt and req.systemPrompt.strip():
+            messages.append({"role": "system", "content": req.systemPrompt})
+        messages.append({"role": "user", "content": req.userPrompt})
+
+        enable_thinking = cfg.llm_enable_thinking if req.thinking is None else req.thinking
+
+        def _sse(payload: Dict[str, Any]) -> str:
+            return f"data: {json.dumps(payload)}\n\n"
+
+        async def event_generator():
+            request_id = f"req_{uuid.uuid4().hex[:10]}"
+            started = time.perf_counter()
+            reasoning_parts: List[str] = []
+            content_parts: List[str] = []
+
+            yield _sse({"type": "start", "request_id": request_id, "model": model})
+            try:
+                client = AsyncOpenAI(
+                    base_url=cfg.openai_base_url,
+                    api_key=cfg.openai_api_key,
+                )
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=req.temperature if req.temperature is not None else 1,
+                    top_p=req.topP if req.topP is not None else cfg.llm_top_p,
+                    max_tokens=req.maxTokens or cfg.llm_max_tokens,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+                    stream=True,
+                )
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    content = delta.content
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                    if content:
+                        content_parts.append(content)
+                    if reasoning or content:
+                        yield _sse({
+                            "type": "delta",
+                            "reasoning": reasoning or "",
+                            "content": content or "",
+                        })
+            except Exception as exc:
+                yield _sse({"type": "error", "error": str(exc)})
+                yield "data: [DONE]\n\n"
+                return
+
+            latency_ms = (time.perf_counter() - started) * 1000
+            reasoning_text = "".join(reasoning_parts)
+            content_text = "".join(content_parts)
+            yield _sse({
+                "type": "done",
+                "request_id": request_id,
+                "model": model,
+                "latency_ms": round(latency_ms, 2),
+                "reasoning_tokens": _estimate_tokens(reasoning_text),
+                "output_tokens": _estimate_tokens(content_text),
+            })
+
+            # Surface the run to the live dashboard feeds & request history
+            req_item = {
+                "id": request_id,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "model": model,
+                "provider": cfg.llm_provider,
+                "endpoint": "/v1/playground/stream",
+                "query": req.userPrompt,
+                "tokens": {
+                    "input": _estimate_tokens(req.userPrompt),
+                    "output": _estimate_tokens(content_text),
+                    "total": _estimate_tokens(req.userPrompt) + _estimate_tokens(content_text),
+                    "cachedInput": 0,
+                },
+                "cache": {"layer": None, "status": "MISS", "similarity": None, "tokensSaved": 0, "latencySaved": 0},
+                "latency": round(latency_ms, 2),
+                "cost": {"input": 0.0, "output": 0.0, "total": 0.0, "saved": 0.0},
+                "status": "OK",
+                "requestBody": {"messages": messages, "stream": True},
+                "responseBody": {
+                    "choices": [{"message": {"role": "assistant", "content": content_text}}],
+                    "reasoning": reasoning_text,
+                },
+                "cacheDecision": [],
+                "trace": {"id": f"trace-{request_id}", "name": "Playground Stream", "duration": round(latency_ms, 2), "status": "success", "children": []},
+            }
+            requests_history.insert(0, req_item)
+            if len(requests_history) > 200:
+                requests_history.pop()
+            _push_event("RequestCompleted", req_item, request_id=request_id)
+
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+        )
 
     @app.post("/v1/chat/completions")
     @app.post("/v1/openai/chat/completions")

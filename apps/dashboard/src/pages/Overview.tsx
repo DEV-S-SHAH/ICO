@@ -15,14 +15,13 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/components/common'
-import { formatNumber, formatPercent, formatDuration, formatRelativeTime } from '@/lib/formatters'
+import { formatNumber, formatPercent, formatDuration, formatRelativeTime, formatCurrency } from '@/lib/formatters'
 import { MetricCard, MetricRow, CacheLayerMetric, TotalCacheHitRate } from '@/components/metrics'
 import { RequestVolumeChart, CachePerformanceChart } from '@/components/charts'
 import { Button, Badge, Card, CardContent, Divider, Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/common'
 import { useUIStore, useDataStore } from '@/lib/stores'
 import { getApiClient } from '@/lib/api/client'
-import { generateMockTimeSeries, mockOverviewMetrics, mockCacheMetrics } from '@/data/mock'
-import type { OverviewMetrics, TimeSeriesPoint, TimeRange } from '@/types'
+import type { OverviewMetrics, CacheMetrics, TimeSeriesPoint, TimeRange } from '@/types'
 
 const TIME_RANGES: Array<{ value: TimeRange; label: string }> = [
   { value: '1h', label: '1H' },
@@ -40,42 +39,40 @@ const METRICS: Array<{ value: 'requests' | 'tokens' | 'cost' | 'latency'; label:
 
 export function Overview() {
   const navigate = useNavigate()
-  const { demoMode, liveTick } = useUIStore()
-  const { overviewMetrics, setOverviewMetrics, timeSeriesData, setTimeSeriesData } = useDataStore()
+  const { connected, liveTick } = useUIStore()
+  const { overviewMetrics, setOverviewMetrics, timeSeriesData, setTimeSeriesData, models, providers, requests, setRequests } = useDataStore()
   const [timeRange, setTimeRange] = useState<TimeRange>('24h')
   const [selectedMetric, setSelectedMetric] = useState<'requests' | 'tokens' | 'cost' | 'latency'>('requests')
   const [loading, setLoading] = useState(true)
   const [chartData, setChartData] = useState<TimeSeriesPoint[]>([])
-  const [cacheMetrics, setCacheMetrics] = useState<typeof mockCacheMetrics | null>(demoMode ? mockCacheMetrics : null)
+  const [cacheMetrics, setCacheMetrics] = useState<CacheMetrics | null>(null)
 
   // Load data (silent=true for background live refreshes to avoid flicker)
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
-    const api = getApiClient(demoMode)
+    const api = getApiClient()
     try {
-      const [overview, series, metrics] = await Promise.all([
+      const [overview, series, metrics, recent] = await Promise.all([
         api.getOverviewMetrics(),
         api.getTimeSeries(selectedMetric, timeRange),
         api.getCacheMetrics(),
+        api.getRequests(
+          { status: 'all', model: 'all', provider: 'all', cache: 'all', endpoint: 'all', timeRange: '24h', search: '' },
+          { page: 1, pageSize: 8, total: 0 },
+          { column: 'timestamp', direction: 'desc' }
+        ),
       ])
       setOverviewMetrics(overview)
       setTimeSeriesData(`${selectedMetric}-${timeRange}`, series)
       setChartData(series)
       setCacheMetrics(metrics)
+      setRequests(recent.data)
     } catch (error) {
       console.error('Failed to load overview data:', error)
-      if (demoMode) {
-        setOverviewMetrics(mockOverviewMetrics)
-        const series = generateMockTimeSeries(selectedMetric, timeRange)
-        setTimeSeriesData(`${selectedMetric}-${timeRange}`, series)
-        setChartData(series)
-        setCacheMetrics(mockCacheMetrics)
-      }
-      // Live mode: keep last real values; never substitute dummy data
     } finally {
       setLoading(false)
     }
-  }, [demoMode, selectedMetric, timeRange, setOverviewMetrics, setTimeSeriesData])
+  }, [selectedMetric, timeRange, setOverviewMetrics, setTimeSeriesData, setRequests])
 
   useEffect(() => {
     loadData()
@@ -237,22 +234,24 @@ export function Overview() {
               </Button>
             </div>
             <div className="space-y-3">
-              {[
-                { type: 'cache-hit', label: 'L2 Cache Hit', detail: 'claude-sonnet-4.6 • 0.94 similarity • 3,605 tokens saved', time: '2m ago', color: 'text-success' },
-                { type: 'cache-miss', label: 'Cache Miss → LLM', detail: 'gpt-5 • /v1/chat/completions • 1,247ms', time: '5m ago', color: 'text-warning' },
-                { type: 'cache-hit', label: 'L1 Cache Hit', detail: 'gemini-2.5-pro • Exact match • 892 tokens saved', time: '8m ago', color: 'text-success' },
-                { type: 'invalidation', label: 'Cache Invalidation', detail: 'Tenant: tenant_a • 1,234 entries purged', time: '12m ago', color: 'text-info' },
-                { type: 'error', label: 'Provider Error', detail: 'Anthropic • Rate limited • Retrying...', time: '15m ago', color: 'text-error' },
-              ].map((activity, index) => (
-                <div key={index} className="flex items-start gap-3 p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
-                  <div className={cn('w-2 h-2 rounded-full mt-2 flex-shrink-0', activity.color.replace('text-', 'bg-'))} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-body font-medium text-text-primary">{activity.label}</p>
-                    <p className="text-metadata text-text-muted mt-0.5 truncate">{activity.detail}</p>
+              {requests.slice(0, 6).map((request) => {
+                const hit = request.cache?.status === 'HIT'
+                const layer = request.cache?.layer || 'Cache'
+                return (
+                  <div key={request.id} className="flex items-start gap-3 p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
+                    <div className={cn('w-2 h-2 rounded-full mt-2 flex-shrink-0', hit ? 'bg-success' : 'bg-warning')} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-body font-medium text-text-primary">
+                        {request.cache?.status ? `${layer} ${request.cache.status}` : 'Request'}
+                      </p>
+                      <p className="text-metadata text-text-muted mt-0.5 truncate">
+                        {request.model} • {request.endpoint || '/v1/query'} • {request.latency}ms
+                      </p>
+                    </div>
+                    <span className="text-metadata text-text-muted flex-shrink-0">{formatRelativeTime(request.timestamp)}</span>
                   </div>
-                  <span className="text-metadata text-text-muted flex-shrink-0">{activity.time}</span>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </CardContent>
         </Card>
@@ -262,23 +261,43 @@ export function Overview() {
           <CardContent className="pt-4">
             <h3 className="text-section-title mb-4">SYSTEM HEALTH</h3>
             <div className="space-y-4">
-              {[
-                { name: 'API Gateway', status: 'healthy', latency: '12ms', uptime: '99.99%' },
-                { name: 'Redis (L1 Cache)', status: 'healthy', latency: '2ms', uptime: '99.99%' },
-                { name: 'Qdrant (L2/L3)', status: 'healthy', latency: '18ms', uptime: '99.95%' },
-                { name: 'Anthropic', status: 'healthy', latency: '245ms', uptime: '99.90%' },
-                { name: 'OpenAI', status: 'degraded', latency: '890ms', uptime: '99.50%' },
-                { name: 'Google AI', status: 'healthy', latency: '156ms', uptime: '99.95%' },
-              ].map((service, index) => (
-                <div key={index} className="flex items-center justify-between p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
+              <div className="flex items-center justify-between p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className={cn('w-2.5 h-2.5 rounded-full', connected ? 'bg-success' : 'bg-error')} />
+                  <span className="text-body font-medium">API Server</span>
+                </div>
+                <div className="flex items-center gap-4 text-metadata text-text-muted">
+                  <span className="font-mono">{connected ? 'healthy' : 'down'}</span>
+                  <Badge variant={connected ? 'success' : 'error'}>{connected ? 'healthy' : 'down'}</Badge>
+                </div>
+              </div>
+              {['L1', 'L2', 'L3'].map((layer) => {
+                const layerMetrics = cacheMetrics?.layers[layer]
+                if (!layerMetrics) return null
+                return (
+                  <div key={layer} className="flex items-center justify-between p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={cn('w-2.5 h-2.5 rounded-full', layerMetrics.requests > 0 ? 'bg-success' : 'bg-warning')} />
+                      <span className="text-body font-medium">{layer} Cache</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-metadata text-text-muted">
+                      <span className="font-mono">{formatPercent(layerMetrics.hitRate)} hit</span>
+                      <span className="font-mono">{formatNumber(layerMetrics.entries)} entries</span>
+                      <Badge variant={layerMetrics.requests > 0 ? 'success' : 'warning'}>{layerMetrics.requests > 0 ? 'healthy' : 'idle'}</Badge>
+                    </div>
+                  </div>
+                )
+              })}
+              {providers.map((provider) => (
+                <div key={provider.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-bg-elevated/50 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className={cn('w-2.5 h-2.5 rounded-full', service.status === 'healthy' ? 'bg-success' : 'bg-warning')} />
-                    <span className="text-body font-medium">{service.name}</span>
+                    <div className={cn('w-2.5 h-2.5 rounded-full', provider.status === 'healthy' ? 'bg-success' : provider.status === 'degraded' ? 'bg-warning' : 'bg-error')} />
+                    <span className="text-body font-medium">{provider.name}</span>
                   </div>
                   <div className="flex items-center gap-4 text-metadata text-text-muted">
-                    <span className="font-mono">{service.latency}</span>
-                    <span className="font-mono">{service.uptime}</span>
-                    <Badge variant={service.status === 'healthy' ? 'success' : 'warning'}>{service.status}</Badge>
+                    <span className="font-mono">{formatDuration(provider.avgLatency)}</span>
+                    <span className="font-mono">{formatNumber(provider.requests)} reqs</span>
+                    <Badge variant={provider.status === 'healthy' ? 'success' : 'warning'}>{provider.status}</Badge>
                   </div>
                 </div>
               ))}
@@ -307,25 +326,17 @@ export function Overview() {
                   <th>CACHE HIT RATE</th>
                   <th>AVG LATENCY</th>
                   <th>COST</th>
-                  <th>TREND</th>
                 </tr>
               </thead>
               <tbody>
-                {[
-                  { model: 'claude-sonnet-4.6', provider: 'Anthropic', requests: '128,492', hitRate: '78.2%', latency: '312ms', cost: '$24.50', trend: '+12.4%' },
-                  { model: 'gpt-5', provider: 'OpenAI', requests: '98,234', hitRate: '71.5%', latency: '425ms', cost: '$31.20', trend: '+8.1%' },
-                  { model: 'gemini-2.5-pro', provider: 'Google', requests: '67,891', hitRate: '65.3%', latency: '287ms', cost: '$18.90', trend: '-2.3%' },
-                  { model: 'llama-3.1-405b', provider: 'Meta', requests: '45,672', hitRate: '82.1%', latency: '512ms', cost: '$12.40', trend: '+22.8%' },
-                  { model: 'gpt-5-mini', provider: 'OpenAI', requests: '43,102', hitRate: '69.8%', latency: '198ms', cost: '$8.75', trend: '+15.2%' },
-                ].map((row, index) => (
-                  <tr key={index}>
-                    <td><code className="code">{row.model}</code></td>
+                {models.map((row) => (
+                  <tr key={row.id}>
+                    <td><code className="code">{row.name}</code></td>
                     <td className="text-text-secondary">{row.provider}</td>
-                    <td className="font-mono tabular-nums">{row.requests}</td>
-                    <td><Badge variant={parseFloat(row.hitRate) > 70 ? 'success' : 'warning'}>{row.hitRate}</Badge></td>
-                    <td className="font-mono tabular-nums">{row.latency}</td>
-                    <td className="font-mono tabular-nums">{row.cost}</td>
-                    <td className={cn('font-mono font-medium', row.trend.startsWith('-') ? 'text-error' : 'text-success')}>{row.trend}</td>
+                    <td className="font-mono tabular-nums">{formatNumber(row.requests)}</td>
+                    <td><Badge variant={row.cacheHitRate > 0.5 ? 'success' : 'warning'}>{formatPercent(row.cacheHitRate)}</Badge></td>
+                    <td className="font-mono tabular-nums">{formatDuration(row.avgLatency)}</td>
+                    <td className="font-mono tabular-nums">{formatCurrency(row.cost)}</td>
                   </tr>
                 ))}
               </tbody>

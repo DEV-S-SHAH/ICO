@@ -1,6 +1,6 @@
 // Main App Component with Routing
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AppLayout } from './components/layout'
 import {
@@ -26,20 +26,51 @@ import { useUIStore, useDataStore } from './lib/stores'
 import { getApiClient } from './lib/api/client'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  // In a real app, you'd check auth here
-  return <>{children}</>
+  // In a real app, you'd check auth here. Errors are contained per-route so a
+  // single page failure never blanks the whole dashboard.
+  return <ErrorBoundary>{children}</ErrorBoundary>
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4 text-center">
+          <p className="text-body text-text-secondary">This page failed to load.</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 rounded-lg bg-accent/10 text-accent font-medium hover:bg-accent/20 transition-colors"
+          >
+            Reload
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 function RealTimeSync() {
-  const { demoMode, setConnected, bumpLiveTick } = useUIStore()
+  const { setConnected, bumpLiveTick } = useUIStore()
 
   useEffect(() => {
-    if (demoMode) return
-    const api = getApiClient(false)
+    const api = getApiClient()
     let ws: WebSocket | null = null
     let wsOpen = false
     let closed = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let lastEventAt = Date.now()
+
+    const markEvent = () => { lastEventAt = Date.now() }
 
     async function checkHealth() {
       try {
@@ -54,11 +85,12 @@ function RealTimeSync() {
       const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws'
       try {
         ws = new WebSocket(wsUrl)
-        ws.onopen = () => { wsOpen = true; setConnected(true); bumpLiveTick() }
+        ws.onopen = () => { wsOpen = true; setConnected(true); markEvent(); bumpLiveTick() }
         ws.onmessage = (event) => {
           try {
             const parsed = JSON.parse(event.data)
             if (parsed.type === 'RequestCompleted' && parsed.payload) {
+              markEvent()
               useUIStore.getState().setLatestLiveRequest(parsed.payload)
               const dataStore = useDataStore.getState()
               const updated = [
@@ -68,6 +100,7 @@ function RealTimeSync() {
               dataStore.setRequests(updated)
               bumpLiveTick()
             } else if (['CacheInvalidation', 'CacheHit', 'CacheMiss'].includes(parsed.type)) {
+              markEvent()
               bumpLiveTick()
             }
           } catch { /* ignore malformed */ }
@@ -83,10 +116,12 @@ function RealTimeSync() {
 
     checkHealth()
     connect()
-    // Health every 5s; if the WebSocket is down, fall back to polling refresh
+    // Health every 5s; if the WebSocket is down OR no event arrived recently,
+    // bump liveTick so every page silently re-syncs from the REST API. This
+    // keeps all pages seamless even if the WS connection stalls or dies.
     const timer = setInterval(() => {
       checkHealth()
-      if (!wsOpen) bumpLiveTick()
+      if (!wsOpen || Date.now() - lastEventAt > 12000) bumpLiveTick()
     }, 5000)
 
     return () => {
@@ -95,7 +130,7 @@ function RealTimeSync() {
       if (reconnectTimer) clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [demoMode, setConnected, bumpLiveTick])
+  }, [setConnected, bumpLiveTick])
 
   return null
 }
@@ -142,43 +177,26 @@ function AppRoutes() {
   )
 }
 
-// Initialize demo data on startup
+// Pre-warm caches in the background without blocking the UI. Pages render
+// immediately with their own loading states.
 function AppInitializer() {
-  const { demoMode, setConnected } = useUIStore()
-  const [initialized, setInitialized] = useState(false)
+  const { setConnected } = useUIStore()
 
   useEffect(() => {
-    async function initialize() {
-      try {
-        // Pre-load some data in background
-        const api = getApiClient(demoMode)
-        await Promise.allSettled([
-          api.healthCheck(),
-          api.getOverviewMetrics(),
-          api.getModels(),
-          api.getProviders(),
-          api.getCacheMetrics(),
-        ])
-        setConnected(true)
-      } catch {
-        // Demo mode - use mock data
+    const api = getApiClient()
+    Promise.allSettled([
+      api.healthCheck(),
+      api.getOverviewMetrics(),
+      api.getModels(),
+      api.getProviders(),
+      api.getCacheMetrics(),
+    ]).then((results) => {
+      const health = results[0]
+      if (health.status === 'fulfilled' && health.value?.status === 'ok') {
         setConnected(true)
       }
-      setInitialized(true)
-    }
-    initialize()
-  }, [demoMode, setConnected])
-
-  if (!initialized) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg-primary">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent mx-auto mb-4" />
-          <p className="text-body text-text-secondary">Initializing Synapse...</p>
-        </div>
-      </div>
-    )
-  }
+    })
+  }, [setConnected])
 
   return <AppRoutes />
 }

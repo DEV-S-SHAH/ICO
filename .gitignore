@@ -88,4 +88,5 @@ packages/ico-cache-py/src/ico_cache.egg-info/
 # Dependencies & Build artifacts
 node_modules/
 apps/dashboard/dist/
+apps/dashboard/.vite/
 examples/real-rag-demo/data/

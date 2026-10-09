@@ -15,72 +15,6 @@ export interface EventProvider {
   isConnected(): boolean
 }
 
-class MockEventProvider implements EventProvider {
-  private handlers: Map<EventType, Set<EventHandler>> = new Map()
-  private connectHandlers: Set<ConnectionHandler> = new Set()
-  private errorHandlers: Set<ErrorHandler> = new Set()
-  private connected = false
-  private intervalId: ReturnType<typeof setInterval> | null = null
-  private eventIndex = 0
-  private events: DashboardEvent[] = []
-
-  async connect(): Promise<void> {
-    this.connected = true
-    this.connectHandlers.forEach(h => h(true))
-
-    // Load mock events
-    const { generateMockEvents } = await import('@/data/mock')
-    this.events = generateMockEvents(100)
-    this.eventIndex = 0
-
-    // Simulate real-time events
-    this.intervalId = setInterval(() => {
-      if (this.eventIndex < this.events.length) {
-        const event = this.events[this.eventIndex]
-        this.handlers.get(event.type)?.forEach(h => h(event))
-        this.eventIndex++
-      } else {
-        // Generate new events periodically
-        const newEvents = generateMockEvents(5)
-        newEvents.forEach(event => {
-          this.handlers.get(event.type)?.forEach(h => h(event))
-        })
-      }
-    }, 2000)
-  }
-
-  disconnect(): void {
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
-    this.connected = false
-    this.connectHandlers.forEach(h => h(false))
-  }
-
-  on(event: EventType, handler: EventHandler): () => void {
-    if (!this.handlers.has(event)) {
-      this.handlers.set(event, new Set())
-    }
-    this.handlers.get(event)!.add(handler)
-    return () => this.handlers.get(event)?.delete(handler)
-  }
-
-  onConnect(handler: ConnectionHandler): () => void {
-    this.connectHandlers.add(handler)
-    return () => this.connectHandlers.delete(handler)
-  }
-
-  onError(handler: ErrorHandler): () => void {
-    this.errorHandlers.add(handler)
-    return () => this.errorHandlers.delete(handler)
-  }
-
-  isConnected(): boolean {
-    return this.connected
-  }
-}
-
 class WebSocketEventProvider implements EventProvider {
   private ws: WebSocket | null = null
   private handlers: Map<EventType, Set<EventHandler>> = new Map()
@@ -259,7 +193,7 @@ class PollingEventProvider implements EventProvider {
     this.intervalId = setInterval(() => this.poll(), this.interval)
   }
 
-  private async poll(): void {
+  private async poll(): Promise<void> {
     try {
       const headers: Record<string, string> = {}
       if (this.apiKey) {
@@ -315,12 +249,10 @@ class PollingEventProvider implements EventProvider {
 
 // Factory function to create the appropriate provider
 export function createEventProvider(
-  type: 'mock' | 'websocket' | 'sse' | 'polling',
+  type: 'websocket' | 'sse' | 'polling',
   config: { url?: string; apiKey?: string; interval?: number } = {}
 ): EventProvider {
   switch (type) {
-    case 'mock':
-      return new MockEventProvider()
     case 'websocket':
       return new WebSocketEventProvider(config.url || 'ws://localhost:8000/ws')
     case 'sse':
@@ -328,7 +260,7 @@ export function createEventProvider(
     case 'polling':
       return new PollingEventProvider(config.url || 'http://localhost:8000', config.apiKey, config.interval)
     default:
-      return new MockEventProvider()
+      return new WebSocketEventProvider(config.url || 'ws://localhost:8000/ws')
   }
 }
 
@@ -363,7 +295,7 @@ export const eventBus = new EventBus()
 import { useEffect, useRef, useState } from 'react'
 
 export function useEventProvider(
-  type: 'mock' | 'websocket' | 'sse' | 'polling',
+  type: 'websocket' | 'sse' | 'polling',
   config?: { url?: string; apiKey?: string; interval?: number }
 ): EventProvider {
   const providerRef = useRef<EventProvider | null>(null)

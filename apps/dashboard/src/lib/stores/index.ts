@@ -96,7 +96,7 @@ export const useUIStore = create<UIState>()(
       theme: 'dark',
       setTheme: (theme) => set({ theme }),
 
-      demoMode: import.meta.env.VITE_ENABLE_DEMO_MODE === 'true',
+      demoMode: false,
       setDemoMode: (enabled) => set({ demoMode: enabled }),
 
       connected: false,
@@ -131,7 +131,6 @@ export const useUIStore = create<UIState>()(
       partialize: (state) => ({
         environment: state.environment,
         theme: state.theme,
-        demoMode: state.demoMode,
       }),
     }
   )
@@ -287,13 +286,13 @@ interface PlaygroundState {
 }
 
 export const usePlaygroundStore = create<PlaygroundState>((set) => ({
-  model: 'claude-sonnet-4.6',
-  provider: 'Anthropic',
-  endpoint: '/v1/messages',
+  model: 'nvidia/nemotron-3-ultra-550b-a55b',
+  provider: 'openai',
+  endpoint: '/v1/playground/stream',
   systemPrompt: 'You are a helpful assistant.',
   userPrompt: '',
-  temperature: 0.7,
-  maxTokens: 1000,
+  temperature: 1,
+  maxTokens: 4096,
   response: null,
   loading: false,
   error: null,
@@ -308,13 +307,13 @@ export const usePlaygroundStore = create<PlaygroundState>((set) => ({
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error, loading: false }),
   reset: () => set({
-    model: 'claude-sonnet-4.6',
-    provider: 'Anthropic',
-    endpoint: '/v1/messages',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    provider: 'openai',
+    endpoint: '/v1/playground/stream',
     systemPrompt: 'You are a helpful assistant.',
     userPrompt: '',
-    temperature: 0.7,
-    maxTokens: 1000,
+    temperature: 1,
+    maxTokens: 4096,
     response: null,
     loading: false,
     error: null,

@@ -175,13 +175,26 @@ export function Webhooks() {
             <Webhook className="w-6 h-6" />
             Webhooks
           </h1>
-          <p className="page-description">Configure real-time event notifications for cache activity</p>
+          <p className="page-description">Example event payloads and schema reference for cache webhook integrations</p>
         </div>
         <Button onClick={() => { resetForm(); setShowCreateModal(true) }}>
           <Plus className="w-4 h-4 mr-2" />
           Create Webhook
         </Button>
       </div>
+
+      {/* Runtime Notice */}
+      <Card className="border-border-subtle bg-bg-elevated">
+        <CardContent className="pt-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-warning mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-medium text-text-primary">Schema reference — no delivery backend in this runtime</p>
+              <p className="text-body text-text-secondary mt-1">This dashboard instance has no webhook delivery service. The endpoints below are example configurations showing the event payload shapes your own receivers can subscribe to.</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Webhooks List */}
       <div className="space-y-4">
@@ -371,7 +384,7 @@ export function Webhooks() {
   tenant: 'default',
   data: {
     requestId: 'req_xyz789',
-    model: 'gpt-4o',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
     prompt: 'What is the capital of France?',
     cacheKey: 'sha256:abc123...',
     layer: 'L2',
@@ -389,7 +402,7 @@ export function Webhooks() {
                   tenant: 'default',
                   data: {
                     requestId: 'req_xyz789',
-                    model: 'gpt-4o',
+                    model: 'nvidia/nemotron-3-ultra-550b-a55b',
                     prompt: 'What is the capital of France?',
                     cacheKey: 'sha256:abc123...',
                     layer: 'L2',

@@ -30,6 +30,23 @@ export interface ApiConfig {
   timeout: number
 }
 
+export interface PlaygroundStreamPayload {
+  model: string
+  systemPrompt: string
+  userPrompt: string
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  thinking?: boolean
+}
+
+export interface PlaygroundStreamHandlers {
+  onStart?: (meta: { request_id?: string; model?: string }) => void
+  onDelta?: (delta: { reasoning: string; content: string }) => void
+  onDone?: (meta: { request_id?: string; model?: string; latency_ms?: number; reasoning_tokens?: number; output_tokens?: number }) => void
+  onError?: (message: string) => void
+}
+
 class ApiClient {
   private config: ApiConfig
   private abortController: AbortController | null = null
@@ -214,6 +231,82 @@ class ApiClient {
     })
   }
 
+  // Streaming playground request (Server-Sent Events, token by token)
+  async streamPlaygroundRequest(
+    payload: PlaygroundStreamPayload,
+    handlers: PlaygroundStreamHandlers = {},
+    signal?: AbortSignal
+  ): Promise<void> {
+    const response = await fetch(`${this.config.baseUrl}/v1/playground/stream`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(payload),
+      signal,
+    })
+
+    if (!response.ok || !response.body) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error(error.detail || error.message || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    const handleEvent = (raw: string) => {
+      const line = raw.trim()
+      if (!line.startsWith('data:')) return
+      const data = line.slice(5).trim()
+      if (!data || data === '[DONE]') return
+      let event: {
+        type: string
+        request_id?: string
+        model?: string
+        reasoning?: string
+        content?: string
+        error?: string
+        latency_ms?: number
+        reasoning_tokens?: number
+        output_tokens?: number
+      }
+      try {
+        event = JSON.parse(data)
+      } catch {
+        return
+      }
+      switch (event.type) {
+        case 'start':
+          handlers.onStart?.({ request_id: event.request_id, model: event.model })
+          break
+        case 'delta':
+          handlers.onDelta?.({ reasoning: event.reasoning || '', content: event.content || '' })
+          break
+        case 'done':
+          handlers.onDone?.({
+            request_id: event.request_id,
+            model: event.model,
+            latency_ms: event.latency_ms,
+            reasoning_tokens: event.reasoning_tokens,
+            output_tokens: event.output_tokens,
+          })
+          break
+        case 'error':
+          handlers.onError?.(event.error || 'Streaming failed')
+          break
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() ?? ''
+      for (const part of parts) handleEvent(part)
+    }
+    if (buffer) handleEvent(buffer)
+  }
+
   // WebSocket connection
   createWebSocket(): WebSocket {
     const ws = new WebSocket(`${this.config.wsUrl}?api_key=${this.config.apiKey}`)
@@ -233,297 +326,6 @@ class ApiClient {
 // Singleton instance
 export const apiClient = new ApiClient()
 
-// Mock API client for demo mode
-export class MockApiClient {
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
-  }
-
-  async healthCheck(): Promise<HealthCheck> {
-    await this.delay(100)
-    const { mockHealthCheck } = await import('@/data/mock')
-    return mockHealthCheck
-  }
-
-  async getOverviewMetrics(): Promise<OverviewMetrics> {
-    await this.delay(150)
-    const { mockOverviewMetrics } = await import('@/data/mock')
-    return mockOverviewMetrics
-  }
-
-  async getRequests(
-    filters: FilterState,
-    pagination: PaginationState,
-    sort: SortState
-  ): Promise<ApiResponse<Request[]>> {
-    await this.delay(200)
-    const { mockRequests } = await import('@/data/mock')
-    let filtered = [...mockRequests]
-
-    // Apply filters
-    if (filters.status !== 'all') {
-      filtered = filtered.filter(r => r.status === filters.status)
-    }
-    if (filters.model !== 'all') {
-      filtered = filtered.filter(r => r.model === filters.model)
-    }
-    if (filters.provider !== 'all') {
-      filtered = filtered.filter(r => r.provider === filters.provider)
-    }
-    if (filters.cache !== 'all') {
-      filtered = filtered.filter(r => r.cache.status === filters.cache)
-    }
-    if (filters.endpoint !== 'all') {
-      filtered = filtered.filter(r => r.endpoint === filters.endpoint)
-    }
-    if (filters.search) {
-      const search = filters.search.toLowerCase()
-      filtered = filtered.filter(r =>
-        r.id.toLowerCase().includes(search) ||
-        r.model.toLowerCase().includes(search) ||
-        r.endpoint.toLowerCase().includes(search)
-      )
-    }
-
-    // Apply sorting
-    filtered.sort((a, b) => {
-      const aVal = a[sort.column as keyof Request]
-      const bVal = b[sort.column as keyof Request]
-      if (aVal < bVal) return sort.direction === 'asc' ? -1 : 1
-      if (aVal > bVal) return sort.direction === 'asc' ? 1 : -1
-      return 0
-    })
-
-    // Apply pagination
-    const start = (pagination.page - 1) * pagination.pageSize
-    const end = start + pagination.pageSize
-    const paginated = filtered.slice(start, end)
-
-    return {
-      data: paginated,
-      meta: {
-        page: pagination.page,
-        pageSize: pagination.pageSize,
-        total: filtered.length,
-      },
-    }
-  }
-
-  async getRequest(id: string): Promise<Request> {
-    await this.delay(100)
-    const { mockRequests } = await import('@/data/mock')
-    const request = mockRequests.find(r => r.id === id)
-    if (!request) throw new Error('Request not found')
-    return request
-  }
-
-  async getModels(): Promise<ModelMetrics[]> {
-    await this.delay(150)
-    const { mockModels } = await import('@/data/mock')
-    return mockModels
-  }
-
-  async getModel(id: string): Promise<ModelMetrics> {
-    await this.delay(100)
-    const { mockModels } = await import('@/data/mock')
-    const model = mockModels.find(m => m.id === id)
-    if (!model) throw new Error('Model not found')
-    return model
-  }
-
-  async getProviders(): Promise<ProviderMetrics[]> {
-    await this.delay(150)
-    const { mockProviders } = await import('@/data/mock')
-    return mockProviders
-  }
-
-  async getProvider(id: string): Promise<ProviderMetrics> {
-    await this.delay(100)
-    const { mockProviders } = await import('@/data/mock')
-    const provider = mockProviders.find(p => p.id === id)
-    if (!provider) throw new Error('Provider not found')
-    return provider
-  }
-
-  async getCacheMetrics(): Promise<CacheMetrics> {
-    await this.delay(150)
-    const { mockCacheMetrics } = await import('@/data/mock')
-    return mockCacheMetrics
-  }
-
-  async getCacheEntries(
-    filters: { layer?: string; model?: string; status?: string },
-    pagination: PaginationState,
-    sort: SortState
-  ): Promise<ApiResponse<CacheEntry[]>> {
-    await this.delay(200)
-    const { mockCacheEntries } = await import('@/data/mock')
-    let filtered = [...mockCacheEntries]
-
-    if (filters.layer) {
-      filtered = filtered.filter(e => e.layer === filters.layer)
-    }
-    if (filters.model) {
-      filtered = filtered.filter(e => e.model === filters.model)
-    }
-    if (filters.status) {
-      filtered = filtered.filter(e => e.status === filters.status)
-    }
-
-    filtered.sort((a, b) => {
-      const aVal = a[sort.column as keyof CacheEntry]
-      const bVal = b[sort.column as keyof CacheEntry]
-      if (aVal < bVal) return sort.direction === 'asc' ? -1 : 1
-      if (aVal > bVal) return sort.direction === 'asc' ? 1 : -1
-      return 0
-    })
-
-    const start = (pagination.page - 1) * pagination.pageSize
-    const end = start + pagination.pageSize
-    const paginated = filtered.slice(start, end)
-
-    return {
-      data: paginated,
-      meta: {
-        page: pagination.page,
-        pageSize: pagination.pageSize,
-        total: filtered.length,
-      },
-    }
-  }
-
-  async invalidateCache(tenantId: string, filter?: Record<string, string>): Promise<{ l1Purged: number; l2Purged: number; l3Purged: number }> {
-    await this.delay(500)
-    return { l1Purged: 123, l2Purged: 456, l3Purged: 78 }
-  }
-
-  async getTimeSeries(
-    metric: 'requests' | 'tokens' | 'cost' | 'latency',
-    range: '1h' | '24h' | '7d' | '30d'
-  ): Promise<TimeSeriesPoint[]> {
-    await this.delay(200)
-    const { generateMockTimeSeries } = await import('@/data/mock')
-    return generateMockTimeSeries(metric, range)
-  }
-
-  async getSettings(): Promise<Settings> {
-    await this.delay(100)
-    // Return default settings
-    return {
-      general: { appName: 'Synapse', defaultTenant: 'default', defaultModel: 'claude-sonnet-4.6' },
-      connection: { apiUrl: 'http://localhost:8000', wsUrl: 'ws://localhost:8000/ws', timeout: 10000, retryAttempts: 3 },
-      providers: [],
-      cache: { l1Enabled: true, l2Enabled: true, l3Enabled: true, l1Ttl: 3600, l2Ttl: 86400, l3Ttl: 604800, similarityThreshold: 0.85 },
-      events: { enabled: true, transport: 'websocket', pollingInterval: 5000 },
-      appearance: { theme: 'dark', compactMode: false, animations: true },
-      api: { apiKeys: {}, rateLimit: 1000 },
-      advanced: { debugMode: false, logLevel: 'info', telemetryEnabled: true },
-    }
-  }
-
-  async updateSettings(settings: Partial<Settings>): Promise<Settings> {
-    await this.delay(200)
-    const current = await this.getSettings()
-    return { ...current, ...settings }
-  }
-
-  async sendPlaygroundRequest(payload: {
-    model: string
-    provider: string
-    endpoint: string
-    systemPrompt: string
-    userPrompt: string
-    temperature?: number
-    maxTokens?: number
-  }): Promise<Request> {
-    await this.delay(1500)
-    const { mockRequests } = await import('@/data/mock')
-    // Return a mock request with the playground data
-    const request = mockRequests[0]
-    return {
-      ...request,
-      model: payload.model,
-      provider: payload.provider,
-      endpoint: payload.endpoint,
-      requestBody: {
-        model: payload.model,
-        messages: [
-          { role: 'system', content: payload.systemPrompt },
-          { role: 'user', content: payload.userPrompt },
-        ],
-        temperature: payload.temperature ?? 0.7,
-        max_tokens: payload.maxTokens ?? 1000,
-      },
-    }
-  }
-
-  async createWebSocket(): Promise<WebSocket> {
-    // Return a mock WebSocket that simulates events
-    const mockWs = {
-      readyState: WebSocket.OPEN,
-      onopen: null as ((event: Event) => void) | null,
-      onmessage: null as ((event: MessageEvent) => void) | null,
-      onclose: null as ((event: CloseEvent) => void) | null,
-      onerror: null as ((event: Event) => void) | null,
-      send: (data: string) => {},
-      close: () => {
-        mockWs.readyState = WebSocket.CLOSED
-        mockWs.onclose?.(new CloseEvent('close'))
-      },
-    } as unknown as WebSocket
-
-    // Simulate connection
-    setTimeout(() => mockWs.onopen?.(new Event('open')), 100)
-
-    // Simulate periodic events
-    const { generateMockEvents } = await import('@/data/mock')
-    const events = generateMockEvents(20)
-    let index = 0
-    const interval = setInterval(() => {
-      if (index < events.length) {
-        mockWs.onmessage?.(new MessageEvent('message', { data: JSON.stringify(events[index]) }))
-        index++
-      } else {
-        clearInterval(interval)
-      }
-    }, 2000)
-
-    return mockWs
-  }
-
-  async createEventSource(): Promise<EventSource> {
-    // Return a mock EventSource
-    const mockEs = {
-      readyState: EventSource.OPEN,
-      onopen: null as ((event: Event) => void) | null,
-      onmessage: null as ((event: MessageEvent) => void) | null,
-      onerror: null as ((event: Event) => void) | null,
-      close: () => {
-        mockEs.readyState = EventSource.CLOSED
-      },
-    } as unknown as EventSource
-
-    setTimeout(() => mockEs.onopen?.(new Event('open')), 100)
-
-    const { generateMockEvents } = await import('@/data/mock')
-    const events = generateMockEvents(20)
-    let index = 0
-    const interval = setInterval(() => {
-      if (index < events.length) {
-        mockEs.onmessage?.(new MessageEvent('message', { data: JSON.stringify(events[index]) }))
-        index++
-      } else {
-        clearInterval(interval)
-      }
-    }, 2000)
-
-    return mockEs
-  }
-}
-
-export const mockApiClient = new MockApiClient()
-
-// Factory to get the appropriate client based on mode
-export function getApiClient(useMock: boolean): ApiClient | MockApiClient {
-  return useMock ? mockApiClient : apiClient
+export function getApiClient(): ApiClient {
+  return apiClient
 }
