@@ -56,6 +56,7 @@ export interface Request {
   latency: number
   cost: CostBreakdown
   status: RequestStatus
+  query?: string
   trace?: RequestTraceNode
   requestBody?: unknown
   responseBody?: unknown

@@ -325,6 +325,7 @@ export function Requests() {
                         <span className="ml-1">{sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}</span>
                       )}
                     </TableHead>
+                    <TableHead>QUERY</TableHead>
                     <TableHead className="cursor-pointer text-right" onClick={() => handleSort('tokens')}>
                       TOKENS
                       {sortConfig.column === 'tokens' && (
@@ -397,6 +398,9 @@ export function Requests() {
                       <TableCell className="text-text-secondary">{request.provider}</TableCell>
                       <TableCell className="font-mono text-code max-w-[160px] truncate">
                         {request.endpoint}
+                      </TableCell>
+                      <TableCell className="text-text-secondary max-w-[280px] truncate" title={request.query || ''}>
+                        {request.query || <span className="text-text-muted italic">—</span>}
                       </TableCell>
                       <TableCell className="font-mono tabular-nums text-text-primary">
                         {formatNumber(request.tokens.input)} / {formatNumber(request.tokens.output)}

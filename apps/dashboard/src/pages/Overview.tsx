@@ -244,6 +244,11 @@ export function Overview() {
                       <p className="text-body font-medium text-text-primary">
                         {request.cache?.status ? `${layer} ${request.cache.status}` : 'Request'}
                       </p>
+                      {request.query && (
+                        <p className="text-body text-text-secondary mt-0.5 truncate" title={request.query}>
+                          {request.query}
+                        </p>
+                      )}
                       <p className="text-metadata text-text-muted mt-0.5 truncate">
                         {request.model} • {request.endpoint || '/v1/query'} • {request.latency}ms
                       </p>
