@@ -16,6 +16,20 @@ pip install ico-cache
 
 ---
 
+## Presentations
+
+PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
+
+| File | PPTX | PDF (View Online) |
+|------|------|-------------------|
+| ICO for AI Agents R 1 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/ICO/main/ppt/ICO%20for%20AI%20Agents%20R%201.pptx) | [View](https://github.com/DEV-S-SHAH/ICO/blob/main/ppt/ICO%20for%20AI%20Agents%20R%201.pdf) |
+| ICO for AI Agents R 2 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/ICO/main/ppt/ICO%20for%20AI%20Agents%20R%202.pptx) | [View](https://github.com/DEV-S-SHAH/ICO/blob/main/ppt/ICO%20for%20AI%20Agents%20R%202.pdf) |
+| ICO for AI Agents R 3 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/ICO/main/ppt/ICO%20for%20AI%20Agents%20R%203.pptx) | [View](https://github.com/DEV-S-SHAH/ICO/blob/main/ppt/ICO%20for%20AI%20Agents%20R%203.pdf) |
+
+[View all files in /ppt folder](https://github.com/DEV-S-SHAH/ICO/tree/main/ppt)
+
+---
+
 ## Why ICO-Cache?
 
 | Metric | Without Cache | With ICO-Cache (`pip install ico-cache`) |
@@ -418,6 +432,7 @@ cd packages/ico-cache-js && npm test
 │   └── validate_real_rag.py   # Comprehensive validation gatekeeper
 ├── docker/                    # Docker Compose production definitions
 ├── deploy/                    # Kubernetes Helm charts & manifests
+├── ppt/                       # Presentation decks (PPTX) + rendered multi-page PDFs
 └── docs/                      # Architectural specifications & decision records
 ```
 
